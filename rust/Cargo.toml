@@ -1,0 +1,43 @@
+[package]
+name = "qobuz-backend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "qobuz_backend"
+crate-type = ["staticlib"]
+
+[dependencies]
+# HTTP client – blocking feature is needed by the audio decoder
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "blocking"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Audio decoding + output
+symphonia = { version = "0.5", features = ["all"] }
+cpal = { version = "0.15", features = ["jack"] }
+rb = "0.3"
+
+# Misc
+anyhow = "1"
+thiserror = "2"
+md5 = "0.7"
+dirs = "5"
+toml = "0.8"
+
+# Crypto — qbz-1 key derivation + segment decryption
+aes   = "0.8"
+cbc   = { version = "0.1", features = ["alloc"] }
+ctr   = "0.9"
+hkdf  = "0.12"
+sha2  = "0.10"
+hex   = "0.4"
+base64 = "0.22"
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+overflow-checks = true

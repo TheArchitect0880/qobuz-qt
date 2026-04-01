@@ -1,0 +1,595 @@
+#include "mainwindow.hpp"
+#include "dialog/login.hpp"
+#include "dialog/settings.hpp"
+#include "util/settings.hpp"
+#include "util/icon.hpp"
+
+#ifdef USE_DBUS
+#include "backend/mpris.hpp"
+#endif
+
+#include <QApplication>
+#include <QMenuBar>
+#include <QMenu>
+#include <QAction>
+#include <QStatusBar>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QTimer>
+#include <QJsonArray>
+
+MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
+    : QMainWindow(parent)
+    , m_backend(backend)
+{
+    setWindowTitle(QStringLiteral("Qobuz"));
+    setMinimumSize(800, 500);
+    resize(defaultSize());
+
+    // ---- Queue (owned here, shared with toolbar and track list) ----
+    m_queue = new PlayQueue(this);
+
+    // ---- Toolbar ----
+    m_toolBar = new MainToolBar(m_backend, m_queue, this);
+    addToolBar(Qt::TopToolBarArea, m_toolBar);
+
+    // ---- Central content ----
+    m_content = new MainContent(m_backend, m_queue, this);
+    setCentralWidget(m_content);
+
+    // ---- Library dock (left) ----
+    m_library = new List::Library(m_backend, this);
+    m_libraryDock = new QDockWidget(tr("Library"), this);
+    m_libraryDock->setObjectName(QStringLiteral("libraryDock"));
+    m_libraryDock->setFeatures(QDockWidget::DockWidgetMovable);
+    m_libraryDock->setWidget(m_library);
+    m_libraryDock->setMinimumWidth(150);
+    addDockWidget(Qt::LeftDockWidgetArea, m_libraryDock);
+
+    // ---- Now-playing context dock (left, below library) ----
+    m_contextView = new Context::View(m_backend, this);
+    addDockWidget(Qt::LeftDockWidgetArea, m_contextView);
+
+    // ---- Queue panel (right) ----
+    m_queuePanel = new QueuePanel(m_queue, this);
+    m_queuePanel->hide();
+    addDockWidget(Qt::RightDockWidgetArea, m_queuePanel);
+
+    // ---- Search side panel (right) ----
+    m_sidePanel = new SidePanel::View(m_backend, m_queue, this);
+    m_sidePanel->hide();
+    addDockWidget(Qt::RightDockWidgetArea, m_sidePanel);
+
+    setupMenuBar();
+    statusBar()->showMessage(tr("Ready"));
+
+    // ---- Scrobbler ----
+        m_scrobbler = new LastFmScrobbler(this);
+        connect(m_backend, &QobuzBackend::trackChanged,
+                m_scrobbler, &LastFmScrobbler::onTrackStarted);
+        connect(m_backend, &QobuzBackend::positionChanged,
+                m_scrobbler, &LastFmScrobbler::onPositionChanged);
+        connect(m_backend, &QobuzBackend::trackFinished,
+                m_scrobbler, &LastFmScrobbler::onTrackFinished);
+
+        // 1. Scrobble the finished track during a gapless transition
+        connect(m_backend, &QobuzBackend::trackTransitioned,
+                m_scrobbler, &LastFmScrobbler::onTrackFinished);
+
+    // ---- Gapless Signal ----
+        connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos, quint64 dur) {
+            if (!AppSettings::instance().gaplessEnabled() || dur == 0) return;
+
+            // Trigger prefetch if we pass the 50% mark OR are within 60 seconds of the end
+            if ((pos > dur / 2) || (dur > 60 && (dur - pos) <= 60)) {
+                if (!m_nextTrackPrefetched && m_queue->canGoNext()) {
+                    m_nextTrackPrefetched = true; // Lock it so it only fires once
+
+                    const auto upcoming = m_queue->upcomingTracks(1);
+                    if (!upcoming.isEmpty()) {
+                        const qint64 nextId = static_cast<qint64>(upcoming.first()["id"].toDouble());
+                        if (nextId > 0) {
+                            m_backend->prefetchTrack(nextId, AppSettings::instance().preferredFormat());
+                        }
+                    }
+                }
+            }
+        });
+
+    // ---- Backend signals ----
+    connect(m_backend, &QobuzBackend::loginSuccess,   this, &MainWindow::onLoginSuccess);
+    connect(m_backend, &QobuzBackend::loginError,     this, &MainWindow::onLoginError);
+    connect(m_backend, &QobuzBackend::userLoaded, this, [this](const QJsonObject &user) {
+        const qint64 id = static_cast<qint64>(user["id"].toDouble());
+        if (id > 0) {
+            AppSettings::instance().setUserId(id);
+            m_library->refresh();  // re-load playlists with correct ownership now
+        }
+    });
+    connect(m_backend, &QobuzBackend::favTracksLoaded,  this, &MainWindow::onFavTracksLoaded);
+    connect(m_backend, &QobuzBackend::favAlbumsLoaded,  this, &MainWindow::onFavAlbumsLoaded);
+    connect(m_backend, &QobuzBackend::favArtistsLoaded, this, &MainWindow::onFavArtistsLoaded);
+    connect(m_backend, &QobuzBackend::albumLoaded,      this, &MainWindow::onAlbumLoaded);
+    connect(m_backend, &QobuzBackend::artistLoaded,     this, &MainWindow::onArtistLoaded);
+    connect(m_backend, &QobuzBackend::artistReleasesLoaded,
+            m_content, &MainContent::updateArtistReleases);
+    connect(m_backend, &QobuzBackend::deepShuffleTracksLoaded,
+            m_content, &MainContent::onDeepShuffleTracks);
+    connect(m_backend, &QobuzBackend::playlistLoaded,   this, &MainWindow::onPlaylistLoaded);
+    connect(m_backend, &QobuzBackend::playlistCreated,   this, &MainWindow::onPlaylistCreated);
+    connect(m_backend, &QobuzBackend::playlistDeleted,   this, [this](const QJsonObject &) {
+        // status bar message is also shown by library's openPlaylistDeleted handler
+    });
+    connect(m_backend, &QobuzBackend::playlistTrackAdded, this, [this](qint64 playlistId) {
+        // Refresh the currently shown playlist if a track was added to it
+        if (m_content->tracksList()->playlistId() == playlistId)
+            m_backend->getPlaylist(playlistId);
+        statusBar()->showMessage(tr("Track added to playlist"), 3000);
+    });
+    connect(m_backend, &QobuzBackend::playlistSubscribed, this, [this](qint64 playlistId) {
+        m_userPlaylistIds.insert(playlistId);
+        m_library->refresh();
+        if (m_content->tracksList()->playlistId() == playlistId)
+            m_content->setCurrentPlaylistFollowed(true);
+        statusBar()->showMessage(tr("Playlist followed"), 3000);
+    });
+    connect(m_backend, &QobuzBackend::playlistUnsubscribed, this, [this](qint64 playlistId) {
+        m_userPlaylistIds.remove(playlistId);
+        m_library->refresh();
+        if (m_content->tracksList()->playlistId() == playlistId)
+            m_content->setCurrentPlaylistFollowed(false);
+        statusBar()->showMessage(tr("Playlist unfollowed"), 3000);
+    });
+    connect(m_backend, &QobuzBackend::trackChanged,   this, &MainWindow::onTrackChanged);
+    connect(m_backend, &QobuzBackend::error, this, [this](const QString &msg) {
+        statusBar()->showMessage(tr("Error: %1").arg(msg), 6000);
+    });
+
+    // ---- Library signals ----
+    connect(m_library, &List::Library::userPlaylistIdsChanged,
+            this, [this](const QSet<qint64> &playlistIds) {
+        m_userPlaylistIds = playlistIds;
+    });
+    connect(m_library, &List::Library::userPlaylistsChanged,
+            this, &MainWindow::onUserPlaylistsChanged);
+    connect(m_library, &List::Library::openPlaylistDeleted,
+            this, [this] {
+        m_content->showWelcome();
+        statusBar()->showMessage(tr("Playlist deleted"), 3000);
+    });
+
+    // ---- Library → backend ----
+    connect(m_library, &List::Library::favTracksRequested, this, [this] {
+        m_backend->getFavTracks();
+        statusBar()->showMessage(tr("Loading favorite tracks…"));
+    });
+
+#ifdef USE_DBUS
+    m_mpris = new Mpris(this);
+    connect(m_mpris->player(), &MprisPlayerAdaptor::playRequested, m_backend, [this] {
+        if (m_backend->state() == 2) m_backend->resume();
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::pauseRequested, m_backend, &QobuzBackend::pause);
+    connect(m_mpris->player(), &MprisPlayerAdaptor::playPauseRequested, m_backend, [this] {
+        if (m_backend->state() == 1)
+            m_backend->pause();
+        else
+            m_backend->resume();
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::stopRequested, m_backend, &QobuzBackend::stop);
+    connect(m_mpris->player(), &MprisPlayerAdaptor::nextRequested, this, [this] {
+        if (!m_queue->canGoNext()) return;
+        const qint64 id = static_cast<qint64>(m_queue->advance()["id"].toDouble());
+        if (id > 0) m_backend->playTrack(id);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::previousRequested, this, [this] {
+        if (!m_queue->canGoPrev()) return;
+        const qint64 id = static_cast<qint64>(m_queue->stepBack()["id"].toDouble());
+        if (id > 0) m_backend->playTrack(id);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::seekRequested, m_backend, [this](qlonglong offsetMicroseconds) {
+        qint64 newPos = m_backend->position() + (offsetMicroseconds / 1000000LL);
+        if (newPos < 0) newPos = 0;
+        m_backend->seek(newPos);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::seekToRequested, m_backend, [this](qlonglong positionMicroseconds) {
+        m_backend->seek(positionMicroseconds / 1000000LL);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::volumeChangeRequested, m_backend, [this](double vol) {
+        m_backend->setVolume(vol * 100);
+    });
+
+    connect(m_backend, &QobuzBackend::stateChanged, this, [this](const QString &state) {
+        if (state == "playing") m_mpris->player()->setPlaybackStatus("Playing");
+        else if (state == "paused") m_mpris->player()->setPlaybackStatus("Paused");
+        else m_mpris->player()->setPlaybackStatus("Stopped");
+    });
+    connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos) {
+        m_mpris->player()->updatePosition(pos);
+    });
+#endif
+
+    connect(m_library, &List::Library::favAlbumsRequested, this, [this] {
+        m_showFavAlbumsOnLoad = true;
+        m_backend->getFavAlbums();
+        statusBar()->showMessage(tr("Loading favorite albums…"));
+    });
+    connect(m_library, &List::Library::favArtistsRequested, this, [this] {
+        m_showFavArtistsOnLoad = true;
+        m_backend->getFavArtists();
+        statusBar()->showMessage(tr("Loading favorite artists…"));
+    });
+    connect(m_library, &List::Library::playlistRequested,
+            this, [this](qint64 id, const QString &name) {
+        m_backend->getPlaylist(id);
+        statusBar()->showMessage(tr("Loading playlist: %1…").arg(name));
+    });
+    connect(m_library, &List::Library::browseGenresRequested, this, [this] {
+        m_content->showGenreBrowser();
+        statusBar()->showMessage(tr("Browse Genres"));
+    });
+    connect(m_library, &List::Library::browsePlaylistsRequested, this, [this] {
+        m_content->showPlaylistBrowser();
+        statusBar()->showMessage(tr("Browse Playlists"));
+    });
+
+    // ---- Track list → playback / playlist management ----
+    connect(m_content->tracksList(), &List::Tracks::playTrackRequested,
+            this, &MainWindow::onPlayTrackRequested);
+    connect(m_content->tracksList(), &List::Tracks::addToPlaylistRequested,
+            this, [this](qint64 trackId, qint64 playlistId) {
+        m_backend->addTrackToPlaylist(playlistId, trackId);
+        statusBar()->showMessage(tr("Adding track to playlist…"), 3000);
+    });
+    connect(m_content->tracksList(), &List::Tracks::removeFromPlaylistRequested,
+            this, [this](qint64 playlistId, qint64 playlistTrackId) {
+        m_backend->deleteTrackFromPlaylist(playlistId, playlistTrackId);
+        statusBar()->showMessage(tr("Removing track from playlist…"), 3000);
+    });
+
+    // ---- Search panel ----
+    connect(m_sidePanel, &SidePanel::View::albumSelected,
+            this, &MainWindow::onSearchAlbumSelected);
+    connect(m_sidePanel, &SidePanel::View::artistSelected,
+            this, &MainWindow::onSearchArtistSelected);
+    connect(m_sidePanel, &SidePanel::View::trackPlayRequested,
+            this, &MainWindow::onPlayTrackRequested);
+    connect(m_sidePanel, &SidePanel::View::addToPlaylistRequested,
+            this, [this](qint64 trackId, qint64 playlistId) {
+        m_backend->addTrackToPlaylist(playlistId, trackId);
+        statusBar()->showMessage(tr("Adding track to playlist..."), 3000);
+    });
+
+    // ---- Album / artist navigation from content views ----
+    connect(m_content, &MainContent::albumRequested,
+            this, &MainWindow::onSearchAlbumSelected);
+    connect(m_content, &MainContent::artistRequested,
+            this, &MainWindow::onSearchArtistSelected);
+    connect(m_content, &MainContent::albumFavoriteToggled,
+            this, [this](const QString &albumId, bool favorite) {
+        if (favorite) {
+            m_backend->addFavAlbum(albumId);
+            m_favAlbumIds.insert(albumId);
+            statusBar()->showMessage(tr("Added album to favorites"), 3000);
+        } else {
+            m_backend->removeFavAlbum(albumId);
+            m_favAlbumIds.remove(albumId);
+            statusBar()->showMessage(tr("Removed album from favorites"), 3000);
+        }
+        m_content->setFavAlbumIds(m_favAlbumIds);
+    });
+    connect(m_content, &MainContent::playlistRequested,
+            this, [this](qint64 playlistId) {
+        m_backend->getPlaylist(playlistId);
+        statusBar()->showMessage(tr("Loading playlist…"));
+    });
+    connect(m_content, &MainContent::playlistFollowToggled,
+            this, [this](qint64 playlistId, bool follow) {
+        if (follow)
+            m_backend->subscribePlaylist(playlistId);
+        else
+            m_backend->unsubscribePlaylist(playlistId);
+    });
+    connect(m_content, &MainContent::playTrackRequested,
+            this, &MainWindow::onPlayTrackRequested);
+
+    // ---- Queue panel ----
+    connect(m_queuePanel, &QueuePanel::skipToTrackRequested,
+            this, &MainWindow::onPlayTrackRequested);
+
+    // ---- Toolbar toggles ----
+    connect(m_toolBar, &MainToolBar::searchToggled, this, &MainWindow::onSearchToggled);
+    connect(m_toolBar, &MainToolBar::queueToggled,
+            this, [this](bool v) { m_queuePanel->setVisible(v); });
+    connect(m_queuePanel, &QDockWidget::visibilityChanged,
+            m_toolBar, &MainToolBar::setQueueToggleChecked);
+    connect(m_sidePanel, &QDockWidget::visibilityChanged,
+            m_toolBar, &MainToolBar::setSearchToggleChecked);
+    m_toolBar->setQueueToggleChecked(m_queuePanel->isVisible());
+    m_toolBar->setSearchToggleChecked(m_sidePanel->isVisible());
+
+    connect(m_toolBar, &MainToolBar::albumRequested,  this, &MainWindow::onSearchAlbumSelected);
+    connect(m_toolBar, &MainToolBar::artistRequested, this, &MainWindow::onSearchArtistSelected);
+
+    // Apply playback options from saved settings
+    m_backend->setReplayGain(AppSettings::instance().replayGainEnabled());
+    m_backend->setGapless(AppSettings::instance().gaplessEnabled());
+
+    tryRestoreSession();
+}
+
+void MainWindow::setupMenuBar()
+{
+    auto *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(Icon::get("im-user-away"), tr("&Sign in…"),
+                        this, &MainWindow::showLoginDialog);
+    fileMenu->addSeparator();
+    fileMenu->addAction(Icon::settings(), tr("&Settings…"),
+                        this, &MainWindow::showSettingsDialog);
+    fileMenu->addSeparator();
+    auto *quitAction = fileMenu->addAction(Icon::get("application-exit"), tr("&Quit"),
+                                           qApp, &QApplication::quit);
+    quitAction->setShortcut(QKeySequence::Quit);
+
+    auto *viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(m_libraryDock->toggleViewAction());
+    viewMenu->addAction(m_contextView->toggleViewAction());
+    viewMenu->addAction(m_queuePanel->toggleViewAction());
+    viewMenu->addAction(m_sidePanel->toggleViewAction());
+
+    auto *helpMenu = menuBar()->addMenu(tr("&Help"));
+    helpMenu->addAction(Icon::get("help-about"), tr("&About"), this, [this] {
+        QMessageBox::about(this, tr("About Qobuz"),
+            tr("<h3>qobuz-qt</h3>"
+               "<p>A lightweight Qt client for the Qobuz streaming service.</p>"
+               "<p>Audio engine: <b>Symphonia</b> (Rust) via CPAL/ALSA.<br>"
+               "Icons: <b>spotify-qt</b> (dark variant).</p>"));
+    });
+}
+
+void MainWindow::tryRestoreSession()
+{
+    const QString token = AppSettings::instance().authToken();
+    if (!token.isEmpty()) {
+        m_backend->setToken(token);
+        if (AppSettings::instance().userId() == 0)
+            m_backend->getUser();  // userLoaded will call m_library->refresh()
+        else
+            m_library->refresh();
+        // Preload fav albums so the album page fav button is accurate immediately.
+        m_backend->getFavAlbums();
+        // Preload fav artists so the artist page fav button works immediately
+        m_backend->getFavArtists();
+        const QString name = AppSettings::instance().displayName();
+        statusBar()->showMessage(tr("Signed in as %1").arg(
+            name.isEmpty() ? AppSettings::instance().userEmail() : name));
+    } else {
+        QTimer::singleShot(200, this, &MainWindow::showLoginDialog);
+    }
+}
+
+// ---- slots ----
+
+void MainWindow::showLoginDialog()
+{
+    auto *dlg = new LoginDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(dlg, &LoginDialog::loginRequested,
+            this, [this, dlg](const QString &email, const QString &password) {
+        dlg->setBusy(true);
+        m_backend->login(email, password);
+    });
+    connect(m_backend, &QobuzBackend::loginSuccess, dlg, [dlg](const QString &, const QJsonObject &) {
+        dlg->accept();
+    });
+    connect(m_backend, &QobuzBackend::loginError, dlg, [dlg](const QString &err) {
+        dlg->setError(err);
+    });
+
+    dlg->exec();
+}
+
+void MainWindow::showSettingsDialog()
+{
+    SettingsDialog dlg(this);
+    dlg.exec();
+}
+
+void MainWindow::onLoginSuccess(const QString &token, const QJsonObject &user)
+{
+    AppSettings::instance().setAuthToken(token);
+    const QString displayName = user["display_name"].toString();
+    const QString email       = user["email"].toString();
+    AppSettings::instance().setDisplayName(displayName);
+    AppSettings::instance().setUserEmail(email);
+    const qint64 userId = static_cast<qint64>(user["id"].toDouble());
+    if (userId > 0)
+        AppSettings::instance().setUserId(userId);
+    statusBar()->showMessage(tr("Signed in as %1").arg(
+        displayName.isEmpty() ? email : displayName));
+    m_library->refresh();
+    m_backend->getFavAlbums();
+    m_backend->getFavArtists();
+}
+
+void MainWindow::onLoginError(const QString &error)
+{
+    statusBar()->showMessage(tr("Login failed: %1").arg(error), 6000);
+}
+
+void MainWindow::onTrackChanged(const QJsonObject &track)
+{
+    m_nextTrackPrefetched = false;
+    // Update playing row highlight in the track list
+    const qint64 id = static_cast<qint64>(track["id"].toDouble());
+    m_content->tracksList()->setPlayingTrackId(id);
+
+    // Update status bar with track name
+    const QString title  = track["title"].toString();
+    const QString artist = track["performer"].toObject()["name"].toString().isEmpty()
+        ? track["album"].toObject()["artist"].toObject()["name"].toString()
+        : track["performer"].toObject()["name"].toString();
+    statusBar()->showMessage(
+        artist.isEmpty() ? title : QStringLiteral("▶  %1 — %2").arg(artist, title));
+
+#ifdef USE_DBUS
+    QVariantMap metadata;
+    metadata["mpris:trackid"] = QVariant::fromValue(QDBusObjectPath(QString("/org/qobuz/track/%1").arg(id)));
+    metadata["mpris:length"] = QVariant::fromValue(qlonglong(track["duration"].toDouble() * 1000000LL));
+    metadata["xesam:title"]  = title;
+
+    QJsonObject album = track["album"].toObject();
+    metadata["xesam:album"]  = album["title"].toString();
+
+    if (!artist.isEmpty()) {
+        metadata["xesam:artist"] = QStringList{artist};
+    }
+
+    if (album.contains("image") && album["image"].toObject().contains("large")) {
+        metadata["mpris:artUrl"] = album["image"].toObject()["large"].toString();
+    }
+
+    m_mpris->player()->setMetadata(metadata);
+#endif
+}
+
+void MainWindow::onFavTracksLoaded(const QJsonObject &result)
+{
+    // Cache fav IDs so the star indicator and context menu stay in sync
+    QSet<qint64> ids;
+    const QJsonArray items = result["items"].toArray();
+    for (const QJsonValue &v : items) {
+        const qint64 id = static_cast<qint64>(v.toObject()["id"].toDouble());
+        if (id > 0) ids.insert(id);
+    }
+    m_content->tracksList()->setFavTrackIds(ids);
+
+    m_content->showFavTracks(result);
+    statusBar()->showMessage(
+        tr("%1 favorite tracks").arg(result["total"].toInt()), 4000);
+}
+
+void MainWindow::onFavAlbumsLoaded(const QJsonObject &result)
+{
+    // Always cache fav album IDs (needed by the album page fav button)
+    m_favAlbumIds.clear();
+    const QJsonArray items = result["items"].toArray();
+    for (const QJsonValue &v : items) {
+        const QJsonObject album = v.toObject();
+        QString id = album["id"].toString();
+        if (id.isEmpty() && album["id"].isDouble())
+            id = QString::number(static_cast<qint64>(album["id"].toDouble()));
+        if (!id.isEmpty())
+            m_favAlbumIds.insert(id);
+    }
+    m_content->setFavAlbumIds(m_favAlbumIds);
+
+    // Only navigate to the fav albums page if the user explicitly requested it
+    if (m_showFavAlbumsOnLoad) {
+        m_showFavAlbumsOnLoad = false;
+        m_content->showFavAlbums(result);
+        statusBar()->showMessage(
+            tr("%1 favorite albums").arg(result["total"].toInt()), 4000);
+    }
+}
+
+void MainWindow::onFavArtistsLoaded(const QJsonObject &result)
+{
+    // Always cache fav artist IDs (needed by the artist page fav button)
+    m_favArtistIds.clear();
+    const QJsonArray items = result["items"].toArray();
+    for (const QJsonValue &v : items) {
+        const qint64 id = static_cast<qint64>(v.toObject()["id"].toDouble());
+        if (id > 0) m_favArtistIds.insert(id);
+    }
+    m_content->setFavArtistIds(m_favArtistIds);
+
+    // Only navigate to the fav artists page if the user explicitly requested it
+    if (m_showFavArtistsOnLoad) {
+        m_showFavArtistsOnLoad = false;
+        m_content->showFavArtists(result);
+        statusBar()->showMessage(
+            tr("%1 favorite artists").arg(result["total"].toInt()), 4000);
+    }
+}
+
+void MainWindow::onAlbumLoaded(const QJsonObject &album)
+{
+    m_content->showAlbum(album);
+    statusBar()->showMessage(
+        tr("Album: %1").arg(album["title"].toString()), 4000);
+}
+
+void MainWindow::onArtistLoaded(const QJsonObject &artist)
+{
+    m_content->showArtist(artist);
+    // Fire release requests only after the artist page is shown — avoids the
+    // race where a fast-responding release request arrives before setArtist()
+    // clears the sections, causing setArtist() to wipe out the data.
+    const qint64 artistId = static_cast<qint64>(artist["id"].toDouble());
+    for (const char *type : {"album", "epSingle", "live", "compilation"})
+        m_backend->getArtistReleases(artistId, QString::fromLatin1(type));
+    statusBar()->showMessage(
+        tr("Artist: %1").arg(artist["name"].toObject()["display"].toString()), 4000);
+}
+
+void MainWindow::onPlaylistLoaded(const QJsonObject &playlist)
+{
+    const qint64 id = static_cast<qint64>(playlist["id"].toDouble());
+    const qint64 ownerId = static_cast<qint64>(playlist["owner"].toObject()["id"].toDouble());
+    const qint64 myId = AppSettings::instance().userId();
+    const bool isOwned = (myId > 0 && ownerId == myId);
+
+    bool isFollowed = isOwned || m_userPlaylistIds.contains(id);
+    if (!isFollowed) {
+        if (playlist.contains("is_subscribed"))
+            isFollowed = playlist["is_subscribed"].toBool();
+        else if (playlist.contains("subscribed_at"))
+            isFollowed = !playlist["subscribed_at"].isNull();
+    }
+
+    m_content->showPlaylist(playlist, isFollowed, isOwned);
+    statusBar()->showMessage(
+        tr("Playlist: %1").arg(playlist["name"].toString()), 4000);
+}
+
+void MainWindow::onPlayTrackRequested(qint64 trackId)
+{
+    m_backend->playTrack(trackId, AppSettings::instance().preferredFormat());
+}
+
+void MainWindow::onSearchAlbumSelected(const QString &albumId)
+{
+    m_backend->getAlbum(albumId);
+    statusBar()->showMessage(tr("Loading album…"));
+}
+
+void MainWindow::onSearchArtistSelected(qint64 artistId)
+{
+    m_backend->getArtist(artistId);
+    statusBar()->showMessage(tr("Loading artist…"));
+}
+
+void MainWindow::onSearchToggled(bool visible)
+{
+    m_sidePanel->setVisible(visible);
+}
+
+void MainWindow::onPlaylistCreated(const QJsonObject &playlist)
+{
+    const QString name = playlist["name"].toString();
+    statusBar()->showMessage(tr("Playlist '%1' created").arg(name), 4000);
+    // Open the new playlist immediately
+    const qint64 id = static_cast<qint64>(playlist["id"].toDouble());
+    if (id > 0)
+        m_backend->getPlaylist(id);
+}
+
+void MainWindow::onUserPlaylistsChanged(const QVector<QPair<qint64, QString>> &playlists)
+{
+    m_userPlaylists = playlists;
+    m_content->tracksList()->setUserPlaylists(playlists);
+    m_sidePanel->searchTab()->setUserPlaylists(playlists);
+}

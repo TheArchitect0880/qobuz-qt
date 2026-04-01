@@ -1,0 +1,49 @@
+name: Build for Windows
+
+on:
+  push:
+    branches: [ "main", "feature/cross-platform" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-msvc
+
+    - name: Install Qt 6
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.5.3'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2019_64'
+
+    - name: Configure CMake
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build Application
+      run: cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+
+    - name: Bundle Executable (windeployqt)
+      run: |
+        mkdir release
+        copy build\Release\qobuz-qt.exe release\
+        windeployqt release\qobuz-qt.exe
+      shell: cmd
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: qobuz-qt-windows-x64
+        path: release/

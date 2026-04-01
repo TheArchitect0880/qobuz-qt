@@ -1,0 +1,7 @@
+build/
+build-*/
+target/
+src/visualizer/
+.cache/
+*.user
+*.autosave
