@@ -38,6 +38,27 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
     m_content = new MainContent(m_backend, m_queue, this);
     setCentralWidget(m_content);
 
+    setupDocks();
+    setupMenuBar();
+    statusBar()->showMessage(tr("Ready"));
+
+    setupScrobbler();
+    setupGapless();
+    setupMpris();
+    connectBackendSignals();
+    connectLibrarySignals();
+    connectContentSignals();
+    connectToolbarSignals();
+
+    // Apply playback options from saved settings
+    m_backend->setReplayGain(AppSettings::instance().replayGainEnabled());
+    m_backend->setGapless(AppSettings::instance().gaplessEnabled());
+
+    tryRestoreSession();
+}
+
+void MainWindow::setupDocks()
+{
     // ---- Library dock (left) ----
     m_library = new List::Library(m_backend, this);
     m_libraryDock = new QDockWidget(tr("Library"), this);
@@ -60,44 +81,95 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
     m_sidePanel = new SidePanel::View(m_backend, m_queue, this);
     m_sidePanel->hide();
     addDockWidget(Qt::RightDockWidgetArea, m_sidePanel);
+}
 
-    setupMenuBar();
-    statusBar()->showMessage(tr("Ready"));
+void MainWindow::setupScrobbler()
+{
+    m_scrobbler = new LastFmScrobbler(this);
+    connect(m_backend, &QobuzBackend::trackChanged,
+            m_scrobbler, &LastFmScrobbler::onTrackStarted);
+    connect(m_backend, &QobuzBackend::positionChanged,
+            m_scrobbler, &LastFmScrobbler::onPositionChanged);
+    connect(m_backend, &QobuzBackend::trackFinished,
+            m_scrobbler, &LastFmScrobbler::onTrackFinished);
 
-    // ---- Scrobbler ----
-        m_scrobbler = new LastFmScrobbler(this);
-        connect(m_backend, &QobuzBackend::trackChanged,
-                m_scrobbler, &LastFmScrobbler::onTrackStarted);
-        connect(m_backend, &QobuzBackend::positionChanged,
-                m_scrobbler, &LastFmScrobbler::onPositionChanged);
-        connect(m_backend, &QobuzBackend::trackFinished,
-                m_scrobbler, &LastFmScrobbler::onTrackFinished);
+    // Scrobble the finished track during a gapless transition
+    connect(m_backend, &QobuzBackend::trackTransitioned,
+            m_scrobbler, &LastFmScrobbler::onTrackFinished);
+}
 
-        // 1. Scrobble the finished track during a gapless transition
-        connect(m_backend, &QobuzBackend::trackTransitioned,
-                m_scrobbler, &LastFmScrobbler::onTrackFinished);
+void MainWindow::setupGapless()
+{
+    connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos, quint64 dur) {
+        if (!AppSettings::instance().gaplessEnabled() || dur == 0) return;
 
-    // ---- Gapless Signal ----
-        connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos, quint64 dur) {
-            if (!AppSettings::instance().gaplessEnabled() || dur == 0) return;
+        // Trigger prefetch if we pass the 50% mark OR are within 60 seconds of the end
+        if ((pos > dur / 2) || (dur > 60 && (dur - pos) <= 60)) {
+            if (!m_nextTrackPrefetched && m_queue->canGoNext()) {
+                m_nextTrackPrefetched = true; // Lock it so it only fires once
 
-            // Trigger prefetch if we pass the 50% mark OR are within 60 seconds of the end
-            if ((pos > dur / 2) || (dur > 60 && (dur - pos) <= 60)) {
-                if (!m_nextTrackPrefetched && m_queue->canGoNext()) {
-                    m_nextTrackPrefetched = true; // Lock it so it only fires once
-
-                    const auto upcoming = m_queue->upcomingTracks(1);
-                    if (!upcoming.isEmpty()) {
-                        const qint64 nextId = static_cast<qint64>(upcoming.first()["id"].toDouble());
-                        if (nextId > 0) {
-                            m_backend->prefetchTrack(nextId, AppSettings::instance().preferredFormat());
-                        }
+                const auto upcoming = m_queue->upcomingTracks(1);
+                if (!upcoming.isEmpty()) {
+                    const qint64 nextId = static_cast<qint64>(upcoming.first()["id"].toDouble());
+                    if (nextId > 0) {
+                        m_backend->prefetchTrack(nextId, AppSettings::instance().preferredFormat());
                     }
                 }
             }
-        });
+        }
+    });
+}
 
-    // ---- Backend signals ----
+void MainWindow::setupMpris()
+{
+#ifdef USE_DBUS
+    m_mpris = new Mpris(this);
+    connect(m_mpris->player(), &MprisPlayerAdaptor::playRequested, m_backend, [this] {
+        if (m_backend->state() == 2) m_backend->resume();
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::pauseRequested, m_backend, &QobuzBackend::pause);
+    connect(m_mpris->player(), &MprisPlayerAdaptor::playPauseRequested, m_backend, [this] {
+        if (m_backend->state() == 1)
+            m_backend->pause();
+        else
+            m_backend->resume();
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::stopRequested, m_backend, &QobuzBackend::stop);
+    connect(m_mpris->player(), &MprisPlayerAdaptor::nextRequested, this, [this] {
+        if (!m_queue->canGoNext()) return;
+        const qint64 id = static_cast<qint64>(m_queue->advance()["id"].toDouble());
+        if (id > 0) m_backend->playTrack(id);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::previousRequested, this, [this] {
+        if (!m_queue->canGoPrev()) return;
+        const qint64 id = static_cast<qint64>(m_queue->stepBack()["id"].toDouble());
+        if (id > 0) m_backend->playTrack(id);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::seekRequested, m_backend, [this](qlonglong offsetMicroseconds) {
+        qint64 newPos = m_backend->position() + (offsetMicroseconds / 1000000LL);
+        if (newPos < 0) newPos = 0;
+        m_backend->seek(newPos);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::seekToRequested, m_backend, [this](qlonglong positionMicroseconds) {
+        m_backend->seek(positionMicroseconds / 1000000LL);
+    });
+    connect(m_mpris->player(), &MprisPlayerAdaptor::volumeChangeRequested, m_backend, [this](double vol) {
+        m_backend->setVolume(vol * 100);
+    });
+
+    connect(m_backend, &QobuzBackend::stateChanged, this, [this](const QString &state) {
+        if (state == "playing") m_mpris->player()->setPlaybackStatus("Playing");
+        else if (state == "paused") m_mpris->player()->setPlaybackStatus("Paused");
+        else m_mpris->player()->setPlaybackStatus("Stopped");
+    });
+    connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos) {
+        m_mpris->player()->updatePosition(pos);
+    });
+#endif
+}
+
+void MainWindow::connectBackendSignals()
+{
     connect(m_backend, &QobuzBackend::loginSuccess,   this, &MainWindow::onLoginSuccess);
     connect(m_backend, &QobuzBackend::loginError,     this, &MainWindow::onLoginError);
     connect(m_backend, &QobuzBackend::userLoaded, this, [this](const QJsonObject &user) {
@@ -145,11 +217,16 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
     connect(m_backend, &QobuzBackend::error, this, [this](const QString &msg) {
         statusBar()->showMessage(tr("Error: %1").arg(msg), 6000);
     });
+}
 
-    // ---- Library signals ----
+void MainWindow::connectLibrarySignals()
+{
     connect(m_library, &List::Library::userPlaylistIdsChanged,
             this, [this](const QSet<qint64> &playlistIds) {
         m_userPlaylistIds = playlistIds;
+        const qint64 currentPlaylistId = m_content->tracksList()->playlistId();
+        if (currentPlaylistId > 0)
+            m_content->setCurrentPlaylistFollowed(m_userPlaylistIds.contains(currentPlaylistId));
     });
     connect(m_library, &List::Library::userPlaylistsChanged,
             this, &MainWindow::onUserPlaylistsChanged);
@@ -164,52 +241,6 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
         m_backend->getFavTracks();
         statusBar()->showMessage(tr("Loading favorite tracks…"));
     });
-
-#ifdef USE_DBUS
-    m_mpris = new Mpris(this);
-    connect(m_mpris->player(), &MprisPlayerAdaptor::playRequested, m_backend, [this] {
-        if (m_backend->state() == 2) m_backend->resume();
-    });
-    connect(m_mpris->player(), &MprisPlayerAdaptor::pauseRequested, m_backend, &QobuzBackend::pause);
-    connect(m_mpris->player(), &MprisPlayerAdaptor::playPauseRequested, m_backend, [this] {
-        if (m_backend->state() == 1)
-            m_backend->pause();
-        else
-            m_backend->resume();
-    });
-    connect(m_mpris->player(), &MprisPlayerAdaptor::stopRequested, m_backend, &QobuzBackend::stop);
-    connect(m_mpris->player(), &MprisPlayerAdaptor::nextRequested, this, [this] {
-        if (!m_queue->canGoNext()) return;
-        const qint64 id = static_cast<qint64>(m_queue->advance()["id"].toDouble());
-        if (id > 0) m_backend->playTrack(id);
-    });
-    connect(m_mpris->player(), &MprisPlayerAdaptor::previousRequested, this, [this] {
-        if (!m_queue->canGoPrev()) return;
-        const qint64 id = static_cast<qint64>(m_queue->stepBack()["id"].toDouble());
-        if (id > 0) m_backend->playTrack(id);
-    });
-    connect(m_mpris->player(), &MprisPlayerAdaptor::seekRequested, m_backend, [this](qlonglong offsetMicroseconds) {
-        qint64 newPos = m_backend->position() + (offsetMicroseconds / 1000000LL);
-        if (newPos < 0) newPos = 0;
-        m_backend->seek(newPos);
-    });
-    connect(m_mpris->player(), &MprisPlayerAdaptor::seekToRequested, m_backend, [this](qlonglong positionMicroseconds) {
-        m_backend->seek(positionMicroseconds / 1000000LL);
-    });
-    connect(m_mpris->player(), &MprisPlayerAdaptor::volumeChangeRequested, m_backend, [this](double vol) {
-        m_backend->setVolume(vol * 100);
-    });
-
-    connect(m_backend, &QobuzBackend::stateChanged, this, [this](const QString &state) {
-        if (state == "playing") m_mpris->player()->setPlaybackStatus("Playing");
-        else if (state == "paused") m_mpris->player()->setPlaybackStatus("Paused");
-        else m_mpris->player()->setPlaybackStatus("Stopped");
-    });
-    connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos) {
-        m_mpris->player()->updatePosition(pos);
-    });
-#endif
-
     connect(m_library, &List::Library::favAlbumsRequested, this, [this] {
         m_showFavAlbumsOnLoad = true;
         m_backend->getFavAlbums();
@@ -233,7 +264,10 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
         m_content->showPlaylistBrowser();
         statusBar()->showMessage(tr("Browse Playlists"));
     });
+}
 
+void MainWindow::connectContentSignals()
+{
     // ---- Track list → playback / playlist management ----
     connect(m_content->tracksList(), &List::Tracks::playTrackRequested,
             this, &MainWindow::onPlayTrackRequested);
@@ -297,8 +331,10 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
     // ---- Queue panel ----
     connect(m_queuePanel, &QueuePanel::skipToTrackRequested,
             this, &MainWindow::onPlayTrackRequested);
+}
 
-    // ---- Toolbar toggles ----
+void MainWindow::connectToolbarSignals()
+{
     connect(m_toolBar, &MainToolBar::searchToggled, this, &MainWindow::onSearchToggled);
     connect(m_toolBar, &MainToolBar::queueToggled,
             this, [this](bool v) { m_queuePanel->setVisible(v); });
@@ -311,12 +347,15 @@ MainWindow::MainWindow(QobuzBackend *backend, QWidget *parent)
 
     connect(m_toolBar, &MainToolBar::albumRequested,  this, &MainWindow::onSearchAlbumSelected);
     connect(m_toolBar, &MainToolBar::artistRequested, this, &MainWindow::onSearchArtistSelected);
-
-    // Apply playback options from saved settings
-    m_backend->setReplayGain(AppSettings::instance().replayGainEnabled());
-    m_backend->setGapless(AppSettings::instance().gaplessEnabled());
-
-    tryRestoreSession();
+    connect(m_toolBar, &MainToolBar::addToPlaylistRequested,
+            this, [this](qint64 trackId, qint64 playlistId) {
+        m_backend->addTrackToPlaylist(playlistId, trackId);
+        statusBar()->showMessage(tr("Adding track to playlist…"), 3000);
+    });
+    connect(m_toolBar, &MainToolBar::favTrackRequested,
+            this, [this](qint64 trackId) {
+        m_backend->addFavTrack(trackId);
+    });
 }
 
 void MainWindow::setupMenuBar()
@@ -537,6 +576,13 @@ void MainWindow::onArtistLoaded(const QJsonObject &artist)
 
 void MainWindow::onPlaylistLoaded(const QJsonObject &playlist)
 {
+    const bool fullLoad = playlist["full_load"].toBool(false);
+    const int trackOffset = playlist["tracks"].toObject()["offset"].toInt(0);
+    if (!fullLoad && trackOffset > 0) {
+        m_content->tracksList()->appendPlaylistPage(playlist);
+        return;
+    }
+
     const qint64 id = static_cast<qint64>(playlist["id"].toDouble());
     const qint64 ownerId = static_cast<qint64>(playlist["owner"].toObject()["id"].toDouble());
     const qint64 myId = AppSettings::instance().userId();
@@ -592,4 +638,5 @@ void MainWindow::onUserPlaylistsChanged(const QVector<QPair<qint64, QString>> &p
     m_userPlaylists = playlists;
     m_content->tracksList()->setUserPlaylists(playlists);
     m_sidePanel->searchTab()->setUserPlaylists(playlists);
+    m_toolBar->setUserPlaylists(playlists);
 }

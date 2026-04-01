@@ -24,6 +24,7 @@ namespace List
         void loadTracks(const QJsonArray &tracks);
         void loadAlbum(const QJsonObject &album);
         void loadPlaylist(const QJsonObject &playlist);
+        void appendPlaylistPage(const QJsonObject &playlist);
         void loadSearchTracks(const QJsonArray &tracks);
 
         /// Called when the backend fires EV_TRACK_CHANGED so the playing row is highlighted.
@@ -55,8 +56,15 @@ namespace List
         QobuzBackend   *m_backend = nullptr;
         PlayQueue      *m_queue   = nullptr;
         qint64          m_playlistId = 0;
+        int             m_playlistTrackTotal = 0;
+        int             m_playlistLoadedCount = 0;
         bool            m_playlistIsOwned = false;
+        bool            m_playlistLoadingMore = false;
+        bool            m_pendingPlayAll = false;
+        bool            m_pendingPlayAllShuffle = false;
         QVector<QPair<qint64, QString>> m_userPlaylists;
+
+        void maybeLoadMorePlaylistTracks();
 
         void onDoubleClicked(const QModelIndex &index);
         void onContextMenu(const QPoint &pos);

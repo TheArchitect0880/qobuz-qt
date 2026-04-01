@@ -225,8 +225,8 @@ void QueuePanel::onContextMenu(const QPoint &pos)
     const int idx = item->data(UpcomingIndexRole).toInt();
 
     QMenu menu(this);
-    auto *removeAct = menu.addAction(tr("Remove from queue"));
-    auto *toTopAct  = menu.addAction(tr("Move to top (play next)"));
+    auto *removeAct = menu.addAction(QIcon(":/res/icons/list-remove.svg"), tr("Remove from queue"));
+    auto *toTopAct  = menu.addAction(QIcon(":/res/icons/go-up.svg"),      tr("Move to top (play next)"));
 
     connect(removeAct, &QAction::triggered, this, [this, idx] { m_queue->removeUpcoming(idx); });
     connect(toTopAct,  &QAction::triggered, this, [this, idx] { m_queue->moveUpcomingToTop(idx); });

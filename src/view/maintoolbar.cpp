@@ -41,16 +41,63 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
     connect(m_trackLabel, &QLabel::customContextMenuRequested,
             this, [this](const QPoint &pos) {
         if (m_currentTrack.isEmpty()) return;
-        QMenu menu(this);
+
+        const qint64 trackId = static_cast<qint64>(m_currentTrack["id"].toDouble());
         const QString albumId  = m_currentTrack["album"].toObject()["id"].toString();
+        const QString albumTitle = m_currentTrack["album"].toObject()["title"].toString();
         const qint64  artistId = static_cast<qint64>(
             m_currentTrack["performer"].toObject()["id"].toDouble());
-        if (!albumId.isEmpty())
-            menu.addAction(tr("Go to Album"),  this, [this, albumId]  { emit albumRequested(albumId);  });
-        if (artistId > 0)
-            menu.addAction(tr("Go to Artist"), this, [this, artistId] { emit artistRequested(artistId); });
-        if (!menu.isEmpty())
-            menu.exec(m_trackLabel->mapToGlobal(pos));
+        const QString artistName = m_currentTrack["performer"].toObject()["name"].toString();
+
+        QMenu menu(this);
+
+        auto *playNext = menu.addAction(QIcon(":/res/icons/media-skip-forward.svg"), tr("Play next"));
+        auto *addQueue = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to queue"));
+        menu.addSeparator();
+
+        auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+        connect(addFav, &QAction::triggered, this, [this, trackId] {
+            emit favTrackRequested(trackId);
+        });
+
+        if (!albumId.isEmpty() || artistId > 0)
+            menu.addSeparator();
+        if (!albumId.isEmpty()) {
+            auto *openAlbum = menu.addAction(
+                QIcon(":/res/icons/view-media-album-cover.svg"),
+                tr("Open album: %1").arg(QString(albumTitle).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+            connect(openAlbum, &QAction::triggered, this, [this, albumId] {
+                emit albumRequested(albumId);
+            });
+        }
+        if (artistId > 0) {
+            auto *openArtist = menu.addAction(
+                QIcon(":/res/icons/view-media-artist.svg"),
+                tr("Open artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+            connect(openArtist, &QAction::triggered, this, [this, artistId] {
+                emit artistRequested(artistId);
+            });
+        }
+
+        if (!m_userPlaylists.isEmpty()) {
+            menu.addSeparator();
+            auto *plMenu = menu.addMenu(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to playlist"));
+            for (const auto &pl : m_userPlaylists) {
+                auto *act = plMenu->addAction(QString(pl.second).replace(QLatin1Char('&'), QStringLiteral("&&")));
+                connect(act, &QAction::triggered, this, [this, trackId, plId = pl.first] {
+                    emit addToPlaylistRequested(trackId, plId);
+                });
+            }
+        }
+
+        connect(playNext, &QAction::triggered, this, [this] {
+            m_queue->playNext(m_currentTrack);
+        });
+        connect(addQueue, &QAction::triggered, this, [this] {
+            m_queue->addToQueue(m_currentTrack);
+        });
+
+        menu.exec(m_trackLabel->mapToGlobal(pos));
     });
 
     addSeparator();

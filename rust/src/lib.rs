@@ -514,6 +514,8 @@ pub unsafe extern "C" fn qobuz_backend_get_featured_albums(
                     "total": total,
                     "type": kind_str,
                     "genre_ids": genre_ids_str,
+                    "offset": offset,
+                    "limit": limit,
                 });
                 call_cb(
                     cb,
@@ -557,6 +559,8 @@ pub unsafe extern "C" fn qobuz_backend_get_featured_playlists(
                     "total": total,
                     "type": kind_str,
                     "genre_ids": genre_ids_str,
+                    "offset": offset,
+                    "limit": limit,
                 });
                 call_cb(
                     cb,
@@ -600,6 +604,8 @@ pub unsafe extern "C" fn qobuz_backend_discover_playlists(
                     "total": total,
                     "genre_ids": genre_ids_str,
                     "tags": tags_str,
+                    "offset": offset,
+                    "limit": limit,
                 });
                 call_cb(
                     cb,
@@ -640,6 +646,8 @@ pub unsafe extern "C" fn qobuz_backend_search_playlists(
                     "items": items,
                     "total": total,
                     "query": query_str,
+                    "offset": offset,
+                    "limit": limit,
                 });
                 call_cb(
                     cb,
@@ -678,6 +686,28 @@ pub unsafe extern "C" fn qobuz_backend_get_playlist(
                 EV_PLAYLIST_OK,
                 serde_json::to_string(&r).unwrap_or_default(),
             ),
+            Err(e) => (EV_PLAYLIST_ERR, err_json(&e.to_string())),
+        };
+        call_cb(cb, ud, ev, &json);
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_get_playlist_all(ptr: *mut Backend, playlist_id: i64) {
+    let inner = &(*ptr).0;
+    let client = inner.client.clone();
+    let cb = inner.cb;
+    let ud = inner.ud;
+    spawn(inner, async move {
+        let result = client.lock().await.get_playlist_all(playlist_id).await;
+        let (ev, json) = match result {
+            Ok(r) => {
+                let mut v = serde_json::to_value(&r).unwrap_or_default();
+                if let serde_json::Value::Object(ref mut obj) = v {
+                    obj.insert("full_load".to_string(), serde_json::Value::Bool(true));
+                }
+                (EV_PLAYLIST_OK, serde_json::to_string(&v).unwrap_or_default())
+            }
             Err(e) => (EV_PLAYLIST_ERR, err_json(&e.to_string())),
         };
         call_cb(cb, ud, ev, &json);

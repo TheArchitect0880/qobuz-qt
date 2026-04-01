@@ -5,6 +5,7 @@
 #include <QHeaderView>
 #include <QMenu>
 #include <QAction>
+#include <QScrollBar>
 
 namespace List
 {
@@ -41,12 +42,45 @@ Tracks::Tracks(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
             setFirstColumnSpanned(row, {}, true);
         setSortingEnabled(!m_model->hasMultipleDiscs());
     });
+    connect(verticalScrollBar(), &QScrollBar::valueChanged,
+            this, [this](int) { maybeLoadMorePlaylistTracks(); });
+
+    connect(m_backend, &QobuzBackend::playlistLoaded, this,
+            [this](const QJsonObject &playlist) {
+        if (!m_pendingPlayAll)
+            return;
+
+        const qint64 id = static_cast<qint64>(playlist["id"].toDouble());
+        if (id != m_playlistId)
+            return;
+
+        if (!playlist["full_load"].toBool())
+            return;
+
+        m_pendingPlayAll = false;
+        const bool shuffle = m_pendingPlayAllShuffle;
+        m_pendingPlayAllShuffle = false;
+
+        const QJsonArray items = playlist["tracks"].toObject()["items"].toArray();
+        if (items.isEmpty())
+            return;
+
+        m_queue->setContext(items, 0);
+        if (shuffle && !m_queue->shuffleEnabled())
+            m_queue->shuffleNow();
+
+        const qint64 firstId = static_cast<qint64>(m_queue->current()["id"].toDouble());
+        if (firstId > 0)
+            emit playTrackRequested(firstId);
+    });
 
 }
 
 void Tracks::loadTracks(const QJsonArray &tracks)
 {
     setPlaylistContext(0);
+    m_pendingPlayAll = false;
+    m_pendingPlayAllShuffle = false;
     setColumnHidden(TrackListModel::ColAlbum, false);
     m_model->setTracks(tracks, false, /*useSequential=*/true);
 }
@@ -54,6 +88,8 @@ void Tracks::loadTracks(const QJsonArray &tracks)
 void Tracks::loadAlbum(const QJsonObject &album)
 {
     setPlaylistContext(0);
+    m_pendingPlayAll = false;
+    m_pendingPlayAllShuffle = false;
     setColumnHidden(TrackListModel::ColAlbum, true);
     const QJsonArray items = album["tracks"].toObject()["items"].toArray();
     m_model->setTracks(items); // album: use track_number
@@ -67,21 +103,72 @@ void Tracks::loadPlaylist(const QJsonObject &playlist)
     const qint64 myId   = AppSettings::instance().userId();
     const bool isOwned  = (myId > 0 && ownId == myId);
     setPlaylistContext(id, isOwned);
-    const QJsonArray items = playlist["tracks"].toObject()["items"].toArray();
+    const QJsonObject tracksObj = playlist["tracks"].toObject();
+    const QJsonArray items = tracksObj["items"].toArray();
+    const int offset = tracksObj["offset"].toInt(0);
+    m_playlistTrackTotal = tracksObj["total"].toInt(items.size());
+    m_playlistLoadedCount = offset + items.size();
+    m_playlistLoadingMore = false;
     m_model->setTracks(items, /*usePosition=*/true);
+    maybeLoadMorePlaylistTracks();
+}
+
+void Tracks::appendPlaylistPage(const QJsonObject &playlist)
+{
+    if (m_playlistId <= 0)
+        return;
+
+    const qint64 id = static_cast<qint64>(playlist["id"].toDouble());
+    if (id != m_playlistId)
+        return;
+
+    const QJsonObject tracksObj = playlist["tracks"].toObject();
+    const QJsonArray items = tracksObj["items"].toArray();
+    const int offset = tracksObj["offset"].toInt(m_playlistLoadedCount);
+    const int total = tracksObj["total"].toInt(m_playlistTrackTotal);
+
+    if (total > 0)
+        m_playlistTrackTotal = total;
+
+    // Ignore stale/duplicate pages.
+    if (offset < m_playlistLoadedCount) {
+        m_playlistLoadingMore = false;
+        return;
+    }
+
+    if (!items.isEmpty()) {
+        m_model->appendTracks(items, /*usePosition=*/true);
+        m_playlistLoadedCount = offset + items.size();
+    } else {
+        m_playlistLoadedCount = qMax(m_playlistLoadedCount, offset);
+    }
+
+    m_playlistLoadingMore = false;
+    maybeLoadMorePlaylistTracks();
 }
 
 void Tracks::loadSearchTracks(const QJsonArray &tracks)
 {
     setPlaylistContext(0);
+    m_pendingPlayAll = false;
+    m_pendingPlayAllShuffle = false;
     setColumnHidden(TrackListModel::ColAlbum, false);
     m_model->setTracks(tracks, false, /*useSequential=*/true);
 }
 
 void Tracks::setPlaylistContext(qint64 playlistId, bool isOwned)
 {
+    if (m_playlistId != playlistId) {
+        m_pendingPlayAll = false;
+        m_pendingPlayAllShuffle = false;
+        m_playlistLoadingMore = false;
+    }
     m_playlistId = playlistId;
     m_playlistIsOwned = isOwned;
+    if (playlistId <= 0) {
+        m_playlistTrackTotal = 0;
+        m_playlistLoadedCount = 0;
+    }
 }
 
 void Tracks::setUserPlaylists(const QVector<QPair<qint64, QString>> &playlists)
@@ -113,6 +200,14 @@ void Tracks::playAll(bool shuffle)
 {
     const QJsonArray tracks = m_model->currentTracksJson();
     if (tracks.isEmpty()) return;
+
+    if (m_playlistId > 0 && m_playlistTrackTotal > tracks.size()) {
+        m_pendingPlayAll = true;
+        m_pendingPlayAllShuffle = shuffle;
+        m_backend->getPlaylistAll(m_playlistId);
+        return;
+    }
+
     m_queue->setContext(tracks, 0);
     // Shuffle once without touching the global shuffle flag — so a subsequent
     // double-click on a track plays in normal order (unless global shuffle is on).
@@ -121,6 +216,30 @@ void Tracks::playAll(bool shuffle)
     const qint64 firstId = static_cast<qint64>(m_queue->current()["id"].toDouble());
     if (firstId > 0)
         emit playTrackRequested(firstId);
+}
+
+void Tracks::maybeLoadMorePlaylistTracks()
+{
+    if (m_playlistId <= 0)
+        return;
+    if (m_pendingPlayAll)
+        return;
+    if (m_playlistLoadingMore)
+        return;
+    if (m_playlistTrackTotal > 0 && m_playlistLoadedCount >= m_playlistTrackTotal)
+        return;
+
+    QScrollBar *bar = verticalScrollBar();
+    if (!bar)
+        return;
+
+    // Start prefetching before the absolute bottom so paging feels seamless.
+    constexpr int kPrefetchPx = 180;
+    if (bar->maximum() > 0 && bar->value() < (bar->maximum() - kPrefetchPx))
+        return;
+
+    m_playlistLoadingMore = true;
+    m_backend->getPlaylist(m_playlistId, static_cast<quint32>(m_playlistLoadedCount), 500);
 }
 
 
@@ -228,7 +347,7 @@ void Tracks::onContextMenu(const QPoint &pos)
             m_model->data(index, TrackListModel::PlaylistTrackIdRole).toLongLong();
         if (playlistTrackId > 0) {
             if (m_userPlaylists.isEmpty()) menu.addSeparator();
-            auto *remFromPl = menu.addAction(tr("Remove from this playlist"));
+            auto *remFromPl = menu.addAction(QIcon(":/res/icons/list-remove.svg"), tr("Remove from this playlist"));
             const qint64 curPlaylistId = m_playlistId;
             const int    curRow        = index.row();
             connect(remFromPl, &QAction::triggered, this, [this, curPlaylistId, playlistTrackId, curRow] {

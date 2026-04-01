@@ -6,8 +6,9 @@ target_sources(qobuz-qt PRIVATE
     mainwindow.hpp
     mainwindow.cpp
 
-    # Queue (header-only)
+    # Queue
     playqueue.hpp
+    playqueue.cpp
 
     # Backend (Qt wrapper around Rust FFI)
     backend/qobuzbackend.hpp

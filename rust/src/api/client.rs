@@ -639,6 +639,51 @@ impl QobuzClient {
         Ok(serde_json::from_value(body)?)
     }
 
+    pub async fn get_playlist_all(&self, playlist_id: i64) -> Result<PlaylistDto> {
+        const PAGE_LIMIT: u32 = 500;
+
+        let mut playlist = self.get_playlist(playlist_id, 0, PAGE_LIMIT).await?;
+
+        let mut all_items = playlist
+            .tracks
+            .as_ref()
+            .and_then(|t| t.items.clone())
+            .unwrap_or_default();
+
+        let mut total = playlist
+            .tracks
+            .as_ref()
+            .and_then(|t| t.total)
+            .unwrap_or(all_items.len() as i32);
+        if total < all_items.len() as i32 {
+            total = all_items.len() as i32;
+        }
+
+        let mut offset = all_items.len() as u32;
+        while (offset as i32) < total {
+            let page = self.get_playlist(playlist_id, offset, PAGE_LIMIT).await?;
+            let mut page_items = page
+                .tracks
+                .as_ref()
+                .and_then(|t| t.items.clone())
+                .unwrap_or_default();
+            if page_items.is_empty() {
+                break;
+            }
+            all_items.append(&mut page_items);
+            offset = all_items.len() as u32;
+        }
+
+        if let Some(tracks) = playlist.tracks.as_mut() {
+            tracks.items = Some(all_items);
+            tracks.total = Some(total);
+            tracks.offset = Some(0);
+            tracks.limit = Some(PAGE_LIMIT as i32);
+        }
+
+        Ok(playlist)
+    }
+
     /// Fetch all favorite IDs (tracks, albums, artists) in one call.
     async fn get_fav_ids(&self) -> Result<FavIdsDto> {
         let resp = self

@@ -1,5 +1,6 @@
 #include "mainwindow.hpp"
 #include "backend/qobuzbackend.hpp"
+#include "util/colors.hpp"
 
 #include <QApplication>
 #include <QStyleFactory>
@@ -15,24 +16,24 @@ int main(int argc, char *argv[])
     // Accent: #FFB232 (yellow-orange), Blue: #46B3EE, Backgrounds: #191919 / #141414
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     QPalette darkPalette;
-    darkPalette.setColor(QPalette::Window,          QColor(0x19, 0x19, 0x19));
-    darkPalette.setColor(QPalette::WindowText,      QColor(0xe8, 0xe8, 0xe8));
-    darkPalette.setColor(QPalette::Base,            QColor(0x14, 0x14, 0x14));
-    darkPalette.setColor(QPalette::AlternateBase,   QColor(0x1e, 0x1e, 0x1e));
-    darkPalette.setColor(QPalette::ToolTipBase,     QColor(0x19, 0x19, 0x19));
-    darkPalette.setColor(QPalette::ToolTipText,     QColor(0xe8, 0xe8, 0xe8));
-    darkPalette.setColor(QPalette::Text,            QColor(0xe8, 0xe8, 0xe8));
-    darkPalette.setColor(QPalette::Button,          QColor(0x2a, 0x2a, 0x2a));
-    darkPalette.setColor(QPalette::ButtonText,      QColor(0xe8, 0xe8, 0xe8));
-    darkPalette.setColor(QPalette::BrightText,      QColor(0xFF, 0xB2, 0x32));
-    darkPalette.setColor(QPalette::Link,            QColor(0x46, 0xB3, 0xEE)); // Qobuz blue
-    darkPalette.setColor(QPalette::Highlight,       QColor(0xFF, 0xB2, 0x32)); // Qobuz orange
-    darkPalette.setColor(QPalette::HighlightedText, QColor(0x10, 0x10, 0x10)); // dark on orange
-    darkPalette.setColor(QPalette::PlaceholderText,                QColor(0x66, 0x66, 0x66));
-    darkPalette.setColor(QPalette::Disabled, QPalette::Text,       QColor(0x55, 0x55, 0x55));
-    darkPalette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x55, 0x55, 0x55));
-    darkPalette.setColor(QPalette::Mid,             QColor(0x2f, 0x2f, 0x2f));
-    darkPalette.setColor(QPalette::Dark,            QColor(0x0e, 0x0e, 0x0e));
+    darkPalette.setColor(QPalette::Window,          Colors::WindowBg);
+    darkPalette.setColor(QPalette::WindowText,      Colors::LightText);
+    darkPalette.setColor(QPalette::Base,            Colors::BaseBg);
+    darkPalette.setColor(QPalette::AlternateBase,   Colors::AlternateBaseBg);
+    darkPalette.setColor(QPalette::ToolTipBase,     Colors::WindowBg);
+    darkPalette.setColor(QPalette::ToolTipText,     Colors::LightText);
+    darkPalette.setColor(QPalette::Text,            Colors::LightText);
+    darkPalette.setColor(QPalette::Button,          Colors::ButtonSurface);
+    darkPalette.setColor(QPalette::ButtonText,      Colors::LightText);
+    darkPalette.setColor(QPalette::BrightText,      Colors::QobuzOrange);
+    darkPalette.setColor(QPalette::Link,            Colors::QobuzBlue);
+    darkPalette.setColor(QPalette::Highlight,       Colors::QobuzOrange);
+    darkPalette.setColor(QPalette::HighlightedText, Colors::HighlightedFg);
+    darkPalette.setColor(QPalette::PlaceholderText,                Colors::PlaceholderText);
+    darkPalette.setColor(QPalette::Disabled, QPalette::Text,       Colors::DisabledText);
+    darkPalette.setColor(QPalette::Disabled, QPalette::ButtonText, Colors::DisabledText);
+    darkPalette.setColor(QPalette::Mid,             Colors::MidSurface);
+    darkPalette.setColor(QPalette::Dark,            Colors::DarkSurface);
     app.setPalette(darkPalette);
 
     // Stylesheet tweaks: orange accent on scrollbars, focus rings, etc.

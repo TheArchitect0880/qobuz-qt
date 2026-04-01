@@ -5,3 +5,4 @@ src/visualizer/
 .cache/
 *.user
 *.autosave
+openapi.json

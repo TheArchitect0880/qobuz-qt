@@ -11,10 +11,10 @@ Much of the UI structure and layout is based on [spotify-qt](https://github.com/
 ## Screenshots
 
 <img width="1720" height="1388" alt="image" src="https://github.com/user-attachments/assets/fd7d6e41-cc78-42a1-bcb0-98b354e8ef33" />
+
 <img width="1720" height="1388" alt="image" src="https://github.com/user-attachments/assets/10b2cc77-fc7b-439e-a39b-c805e6250af0" />
+
 <img width="1720" height="1388" alt="image" src="https://github.com/user-attachments/assets/11eb865e-e76c-422a-89ce-75cb6697e6bd" />
-
-
 
 ## Features
 
@@ -38,7 +38,7 @@ Much of the UI structure and layout is based on [spotify-qt](https://github.com/
 
 ## Building
 
-### Dependencies
+### Linux
 
 Debian/Ubuntu:
 
@@ -48,11 +48,20 @@ sudo apt install cmake ninja-build qt6-base-dev qt6-svg-dev libssl-dev libasound
 
 Rust toolchain: install via [rustup](https://rustup.rs).
 
-### Build
-
 ```
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+```
+
+### Windows
+
+A prebuilt Windows binary can be downloaded from the [GitHub Actions](https://github.com/TheArchitect0880/qobuz-qt/actions) tab. Select the latest successful run and download the `qobuz-qt-windows-x64` artifact.
+
+To build from source, install Qt 6, Rust, and Visual Studio with CMake, then run:
+
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
 
 ## License

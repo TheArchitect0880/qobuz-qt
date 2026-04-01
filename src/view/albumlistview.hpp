@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../util/colors.hpp"
+
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QHeaderView>
@@ -89,7 +91,7 @@ public:
             auto *item = new QTreeWidgetItem(this);
             if (hiRes) {
                 item->setText(0, QStringLiteral("H"));
-                item->setForeground(0, QColor(QStringLiteral("#FFB232")));
+                item->setForeground(0, Colors::QobuzOrange);
                 item->setFont(0, hiResFont);
                 item->setTextAlignment(0, Qt::AlignCenter);
             }

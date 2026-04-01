@@ -35,6 +35,7 @@ public:
     void getArtistReleases(qint64 artistId, const QString &releaseType, quint32 limit = 50, quint32 offset = 0);
     void getAlbumsTracks(const QStringList &albumIds);
     void getPlaylist(qint64 playlistId, quint32 offset = 0, quint32 limit = 500);
+    void getPlaylistAll(qint64 playlistId);
     void getGenres();
     void getFeaturedAlbums(const QString &genreIds, const QString &kind, quint32 limit = 50, quint32 offset = 0);
     void getFeaturedPlaylists(const QString &genreIds, const QString &kind, quint32 limit = 25, quint32 offset = 0);

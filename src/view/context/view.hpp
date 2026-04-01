@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../backend/qobuzbackend.hpp"
+#include "../../util/colors.hpp"
 
 #include <QDockWidget>
 #include <QWidget>
@@ -32,11 +33,11 @@ namespace Context
         {
             QPainter p(this);
             if (m_pix.isNull()) {
-                p.fillRect(rect(), QColor(0x1a, 0x1a, 0x1a));
+                p.fillRect(rect(), Colors::ContextBg);
                 return;
             }
             const QPixmap scaled = m_pix.scaled(size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            p.fillRect(rect(), QColor(0x1a, 0x1a, 0x1a));
+            p.fillRect(rect(), Colors::ContextBg);
             p.drawPixmap((width()  - scaled.width())  / 2,
                          (height() - scaled.height()) / 2,
                          scaled);

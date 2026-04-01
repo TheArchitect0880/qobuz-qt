@@ -12,6 +12,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QJsonObject>
+#include <QPair>
 #include <QVector>
 
 class MainToolBar : public QToolBar
@@ -27,11 +28,15 @@ public:
     void setQueueToggleChecked(bool checked);
     void setSearchToggleChecked(bool checked);
 
+    void setUserPlaylists(const QVector<QPair<qint64, QString>> &playlists) { m_userPlaylists = playlists; }
+
 signals:
     void searchToggled(bool visible);
     void queueToggled(bool visible);
     void albumRequested(const QString &albumId);
     void artistRequested(qint64 artistId);
+    void addToPlaylistRequested(qint64 trackId, qint64 playlistId);
+    void favTrackRequested(qint64 trackId);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -92,6 +97,8 @@ private:
     quint64     m_pendingSeekTarget = 0;
     qint64      m_pendingSeekStartedMs = 0;
     bool        m_fetchingAutoplay = false;
+
+    QVector<QPair<qint64, QString>> m_userPlaylists;
 
     void requestAutoplaySuggestions();
 };

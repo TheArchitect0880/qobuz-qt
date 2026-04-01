@@ -61,14 +61,14 @@ MainContent::MainContent(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
     m_artistView = new ArtistView(backend, queue, this);
     m_genreBrowser = new GenreBrowserView(backend, queue, this);
 
-    m_stack->addWidget(m_welcome);    // 0
-    m_stack->addWidget(tracksPage);   // 1
-    m_stack->addWidget(m_albumList);  // 2
-    m_stack->addWidget(m_artistList); // 3
-    m_stack->addWidget(m_artistView); // 4
-    m_stack->addWidget(m_genreBrowser); // 5
+    m_stack->addWidget(m_welcome);      // PageWelcome
+    m_stack->addWidget(tracksPage);     // PageTracks
+    m_stack->addWidget(m_albumList);    // PageAlbumList
+    m_stack->addWidget(m_artistList);   // PageArtistList
+    m_stack->addWidget(m_artistView);   // PageArtistDetail
+    m_stack->addWidget(m_genreBrowser); // PageGenreBrowser
 
-    m_stack->setCurrentIndex(0);
+    m_stack->setCurrentIndex(PageWelcome);
 
     connect(m_albumList,  &AlbumListView::albumSelected,   this, &MainContent::albumRequested);
     connect(m_artistList, &ArtistListView::artistSelected, this, &MainContent::artistRequested);
@@ -80,7 +80,7 @@ MainContent::MainContent(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
     connect(m_genreBrowser, &GenreBrowserView::playTrackRequested, this, &MainContent::playTrackRequested);
 }
 
-void MainContent::showWelcome()       { m_stack->setCurrentIndex(0); }
+void MainContent::showWelcome()       { m_stack->setCurrentIndex(PageWelcome); }
 
 void MainContent::showAlbum(const QJsonObject &album)
 {
@@ -89,46 +89,46 @@ void MainContent::showAlbum(const QJsonObject &album)
         albumId = QString::number(static_cast<qint64>(album["id"].toDouble()));
     m_header->setAlbum(album, m_favAlbumIds.contains(albumId));
     m_tracks->loadAlbum(album);
-    m_stack->setCurrentIndex(1);
+    m_stack->setCurrentIndex(PageTracks);
 }
 
 void MainContent::showPlaylist(const QJsonObject &playlist, bool isFollowed, bool isOwned)
 {
     m_header->setPlaylist(playlist, isFollowed, isOwned);
     m_tracks->loadPlaylist(playlist);
-    m_stack->setCurrentIndex(1);
+    m_stack->setCurrentIndex(PageTracks);
 }
 
 void MainContent::showFavTracks(const QJsonObject &result)
 {
     m_header->hide();
     m_tracks->loadTracks(result["items"].toArray());
-    m_stack->setCurrentIndex(1);
+    m_stack->setCurrentIndex(PageTracks);
 }
 
 void MainContent::showSearchTracks(const QJsonArray &tracks)
 {
     m_header->hide();
     m_tracks->loadSearchTracks(tracks);
-    m_stack->setCurrentIndex(1);
+    m_stack->setCurrentIndex(PageTracks);
 }
 
 void MainContent::showFavAlbums(const QJsonObject &result)
 {
     m_albumList->setAlbums(result["items"].toArray());
-    m_stack->setCurrentIndex(2);
+    m_stack->setCurrentIndex(PageAlbumList);
 }
 
 void MainContent::showFavArtists(const QJsonObject &result)
 {
     m_artistList->setArtists(result["items"].toArray());
-    m_stack->setCurrentIndex(3);
+    m_stack->setCurrentIndex(PageArtistList);
 }
 
 void MainContent::showArtist(const QJsonObject &artist)
 {
     m_artistView->setArtist(artist);
-    m_stack->setCurrentIndex(4);
+    m_stack->setCurrentIndex(PageArtistDetail);
 }
 
 void MainContent::updateArtistReleases(const QString &releaseType, const QJsonArray &items, bool hasMore, int offset)
@@ -160,14 +160,14 @@ void MainContent::showGenreBrowser()
 {
     m_genreBrowser->ensureGenresLoaded();
     m_genreBrowser->setBrowseMode(GenreBrowserView::BrowseMode::Genres);
-    m_stack->setCurrentIndex(5);
+    m_stack->setCurrentIndex(PageGenreBrowser);
 }
 
 void MainContent::showPlaylistBrowser()
 {
     m_genreBrowser->ensureGenresLoaded();
     m_genreBrowser->setBrowseMode(GenreBrowserView::BrowseMode::PlaylistSearch);
-    m_stack->setCurrentIndex(5);
+    m_stack->setCurrentIndex(PageGenreBrowser);
 }
 
 void MainContent::setCurrentPlaylistFollowed(bool followed)

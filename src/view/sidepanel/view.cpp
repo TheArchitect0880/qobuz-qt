@@ -1,4 +1,5 @@
 #include "view.hpp"
+#include "../../util/colors.hpp"
 #include "../../util/trackinfo.hpp"
 
 #include <QVBoxLayout>
@@ -125,7 +126,7 @@ void SearchTab::onMostPopularResult(const QJsonObject &result)
             const QString artist = content["performer"].toObject()["name"].toString();
             const QString album = content["album"].toObject()["title"].toString();
             item->setText(0, QStringLiteral("T"));
-            item->setForeground(0, QColor(QStringLiteral("#2FA84F")));
+            item->setForeground(0, Colors::BadgeGreen);
             item->setFont(0, badgeFont);
             item->setTextAlignment(0, Qt::AlignCenter);
             item->setText(1, title);
@@ -139,8 +140,8 @@ void SearchTab::onMostPopularResult(const QJsonObject &result)
                 || content["rights"].toObject()["hires_streamable"].toBool();
             item->setText(0, hiRes ? QStringLiteral("H") : QStringLiteral("A"));
             item->setForeground(0, hiRes
-                ? QColor(QStringLiteral("#FFB232"))
-                : QColor(QStringLiteral("#8E8E93")));
+                ? Colors::QobuzOrange
+                : Colors::BadgeGray);
             item->setFont(0, badgeFont);
             item->setTextAlignment(0, Qt::AlignCenter);
             item->setText(1, title);
@@ -149,7 +150,7 @@ void SearchTab::onMostPopularResult(const QJsonObject &result)
             item->setData(1, IdRole, content["id"].toString());
         } else if (type == QStringLiteral("artists")) {
             item->setText(0, QStringLiteral("A"));
-            item->setForeground(0, QColor(QStringLiteral("#2B7CD3")));
+            item->setForeground(0, Colors::BadgeBlue);
             item->setFont(0, badgeFont);
             item->setTextAlignment(0, Qt::AlignCenter);
             item->setText(1, content["name"].toString());
@@ -193,7 +194,7 @@ void SearchTab::onSearchResult(const QJsonObject &result)
                 QStringList{QString(), a["title"].toString(), artist});
             if (hiRes) {
                 item->setText(0, QStringLiteral("H"));
-                item->setForeground(0, QColor(QStringLiteral("#FFB232")));
+                item->setForeground(0, Colors::QobuzOrange);
                 item->setFont(0, hiResFont);
                 item->setTextAlignment(0, Qt::AlignCenter);
             }
@@ -240,12 +241,15 @@ void SearchTab::onTrackContextMenu(const QPoint &pos)
 
     QMenu menu(this);
 
-    auto *playNow  = menu.addAction(tr("Play now"));
-    auto *playNext = menu.addAction(tr("Play next"));
-    auto *addQueue = menu.addAction(tr("Add to queue"));
+    auto *playNow  = menu.addAction(QIcon(":/res/icons/media-playback-start.svg"), tr("Play now"));
+    auto *playNext = menu.addAction(QIcon(":/res/icons/media-skip-forward.svg"),   tr("Play next"));
+    auto *addQueue = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to queue"));
     menu.addSeparator();
 
-    auto *addFav = menu.addAction(tr("Add to favorites"));
+    auto *favAction = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+    connect(favAction, &QAction::triggered, this, [this, trackId] {
+        m_backend->addFavTrack(trackId);
+    });
 
     // Open album / artist
     const QString albumId = trackJson["album"].toObject()["id"].toString();
@@ -254,15 +258,20 @@ void SearchTab::onTrackContextMenu(const QPoint &pos)
     const QString artistName = trackJson["performer"].toObject()["name"].toString();
     const QString albumTitle = trackJson["album"].toObject()["title"].toString();
 
-    menu.addSeparator();
+    if (!albumId.isEmpty() || artistId > 0)
+        menu.addSeparator();
     if (!albumId.isEmpty()) {
-        auto *openAlbum = menu.addAction(tr("Go to album: %1").arg(QString(albumTitle).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+        auto *openAlbum = menu.addAction(
+            QIcon(":/res/icons/view-media-album-cover.svg"),
+            tr("Open album: %1").arg(QString(albumTitle).replace(QLatin1Char('&'), QStringLiteral("&&"))));
         connect(openAlbum, &QAction::triggered, this, [this, albumId] {
             emit albumSelected(albumId);
         });
     }
     if (artistId > 0) {
-        auto *openArtist = menu.addAction(tr("Go to artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+        auto *openArtist = menu.addAction(
+            QIcon(":/res/icons/view-media-artist.svg"),
+            tr("Open artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
         connect(openArtist, &QAction::triggered, this, [this, artistId] {
             emit artistSelected(artistId);
         });
@@ -271,9 +280,9 @@ void SearchTab::onTrackContextMenu(const QPoint &pos)
     // Add to playlist submenu
     if (!m_userPlaylists.isEmpty()) {
         menu.addSeparator();
-        auto *plMenu = menu.addMenu(tr("Add to playlist"));
+        auto *plMenu = menu.addMenu(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to playlist"));
         for (const auto &pl : m_userPlaylists) {
-            auto *act = plMenu->addAction(pl.second);
+            auto *act = plMenu->addAction(QString(pl.second).replace(QLatin1Char('&'), QStringLiteral("&&")));
             connect(act, &QAction::triggered, this, [this, trackId, plId = pl.first] {
                 emit addToPlaylistRequested(trackId, plId);
             });
@@ -293,9 +302,6 @@ void SearchTab::onTrackContextMenu(const QPoint &pos)
     connect(addQueue, &QAction::triggered, this, [this, trackJson] {
         m_queue->addToQueue(trackJson);
     });
-    connect(addFav, &QAction::triggered, this, [this, trackId] {
-        m_backend->addFavTrack(trackId);
-    });
     connect(info, &QAction::triggered, this, [this, trackJson] {
         showTrackInfo(trackJson);
     });
@@ -314,15 +320,17 @@ void SearchTab::onAlbumContextMenu(const QPoint &pos)
 
     QMenu menu(this);
 
-    auto *openAlbum = menu.addAction(tr("Open album"));
-    auto *addFav    = menu.addAction(tr("Add to favorites"));
+    auto *openAlbum = menu.addAction(QIcon(":/res/icons/view-media-album-cover.svg"), tr("Open album"));
+    auto *addFav    = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
 
     const qint64 artistId = static_cast<qint64>(
         albumJson["artist"].toObject()["id"].toDouble());
     const QString artistName = albumJson["artist"].toObject()["name"].toString();
     if (artistId > 0) {
         menu.addSeparator();
-        auto *openArtist = menu.addAction(tr("Go to artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+        auto *openArtist = menu.addAction(
+            QIcon(":/res/icons/view-media-artist.svg"),
+            tr("Open artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
         connect(openArtist, &QAction::triggered, this, [this, artistId] {
             emit artistSelected(artistId);
         });

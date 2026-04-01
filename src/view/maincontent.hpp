@@ -52,6 +52,15 @@ signals:
     void playTrackRequested(qint64 trackId);
 
 private:
+    enum StackPage {
+        PageWelcome      = 0,
+        PageTracks       = 1,
+        PageAlbumList    = 2,
+        PageArtistList   = 3,
+        PageArtistDetail = 4,
+        PageGenreBrowser = 5,
+    };
+
     QobuzBackend        *m_backend    = nullptr;
     QStackedWidget      *m_stack      = nullptr;
     QLabel              *m_welcome    = nullptr;

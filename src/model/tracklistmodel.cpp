@@ -1,4 +1,5 @@
 #include "tracklistmodel.hpp"
+#include "../util/colors.hpp"
 
 #include <QJsonValue>
 #include <QColor>
@@ -8,6 +9,56 @@
 TrackListModel::TrackListModel(QObject *parent)
     : QAbstractTableModel(parent)
 {}
+
+TrackItem TrackListModel::parseTrackItem(const QJsonObject &t,
+                                         bool usePosition,
+                                         bool useSequential,
+                                         int &seq)
+{
+    TrackItem item;
+    item.id               = static_cast<qint64>(t["id"].toDouble());
+    item.playlistTrackId  = static_cast<qint64>(t["playlist_track_id"].toDouble());
+    item.discNumber       = t["media_number"].toInt(1);
+    item.duration         = static_cast<qint64>(t["duration"].toDouble());
+    item.streamable       = t["streamable"].toBool(true);
+    item.hiRes            = t["hires_streamable"].toBool();
+    item.raw              = t;
+
+    // Combine title + version ("Melody" + "Vocal Remix" → "Melody (Vocal Remix)")
+    const QString base    = t["title"].toString();
+    const QString version = t["version"].toString().trimmed();
+    item.title = version.isEmpty() ? base
+               : base + QStringLiteral(" (") + version + QLatin1Char(')');
+
+    if (useSequential) {
+        item.number = seq++;
+    } else if (usePosition) {
+        const int pos = t["position"].toInt();
+        item.number = pos > 0 ? pos : seq;
+        ++seq;
+    } else {
+        item.number = t["track_number"].toInt();
+    }
+
+    const QJsonObject performer = t["performer"].toObject();
+    item.artist = performer["name"].toString();
+    if (item.artist.isEmpty()) {
+        // album.artist.name may be a plain string or {display:"..."} object
+        const QJsonValue n = t["album"].toObject()["artist"].toObject()["name"];
+        item.artist = n.isObject() ? n.toObject()["display"].toString() : n.toString();
+    }
+    if (item.artist.isEmpty()) {
+        // top_tracks format: artist.name.display
+        const QJsonValue n = t["artist"].toObject()["name"];
+        item.artist = n.isObject() ? n.toObject()["display"].toString() : n.toString();
+    }
+
+    const QJsonObject album = t["album"].toObject();
+    item.album   = album["title"].toString();
+    item.albumId = album["id"].toString();
+
+    return item;
+}
 
 void TrackListModel::setTracks(const QJsonArray &tracks,
                                bool usePosition,
@@ -22,52 +73,8 @@ void TrackListModel::setTracks(const QJsonArray &tracks,
     parsed.reserve(tracks.size());
 
     int seq = 1;
-    for (const QJsonValue &v : tracks) {
-        const QJsonObject t = v.toObject();
-        TrackItem item;
-        item.id               = static_cast<qint64>(t["id"].toDouble());
-        item.playlistTrackId  = static_cast<qint64>(t["playlist_track_id"].toDouble());
-        item.discNumber       = t["media_number"].toInt(1);
-        item.duration         = static_cast<qint64>(t["duration"].toDouble());
-        item.streamable       = t["streamable"].toBool(true);
-        item.hiRes            = t["hires_streamable"].toBool();
-        item.raw              = t;
-
-        // Combine title + version ("Melody" + "Vocal Remix" → "Melody (Vocal Remix)")
-        const QString base    = t["title"].toString();
-        const QString version = t["version"].toString().trimmed();
-        item.title = version.isEmpty() ? base
-                   : base + QStringLiteral(" (") + version + QLatin1Char(')');
-
-        if (useSequential) {
-            item.number = seq++;
-        } else if (usePosition) {
-            const int pos = t["position"].toInt();
-            item.number = pos > 0 ? pos : seq;
-            ++seq;
-        } else {
-            item.number = t["track_number"].toInt();
-        }
-
-        const QJsonObject performer = t["performer"].toObject();
-        item.artist = performer["name"].toString();
-        if (item.artist.isEmpty()) {
-            // album.artist.name may be a plain string or {display:"..."} object
-            const QJsonValue n = t["album"].toObject()["artist"].toObject()["name"];
-            item.artist = n.isObject() ? n.toObject()["display"].toString() : n.toString();
-        }
-        if (item.artist.isEmpty()) {
-            // top_tracks format: artist.name.display
-            const QJsonValue n = t["artist"].toObject()["name"];
-            item.artist = n.isObject() ? n.toObject()["display"].toString() : n.toString();
-        }
-
-        const QJsonObject album = t["album"].toObject();
-        item.album   = album["title"].toString();
-        item.albumId = album["id"].toString();
-
-        parsed.append(item);
-    }
+    for (const QJsonValue &v : tracks)
+        parsed.append(parseTrackItem(v.toObject(), usePosition, useSequential, seq));
 
     // Multi-disc only makes sense for album context (not playlists / fav / search)
     int maxDisc = 1;
@@ -109,6 +116,51 @@ void TrackListModel::setTracks(const QJsonArray &tracks,
         emit sortApplied();
 }
 
+void TrackListModel::appendTracks(const QJsonArray &tracks,
+                                  bool usePosition,
+                                  bool useSequential)
+{
+    if (tracks.isEmpty())
+        return;
+
+    // Keep append path simple and stable: disc-header mode is handled by reset path.
+    if (m_hasMultipleDiscs && !usePosition && !useSequential) {
+        QJsonArray all = currentTracksJson();
+        for (const QJsonValue &v : tracks)
+            all.append(v);
+        setTracks(all, usePosition, useSequential);
+        return;
+    }
+
+    int seq = 1;
+    if (useSequential || usePosition) {
+        for (const TrackItem &t : m_tracks)
+            if (!t.isDiscHeader)
+                ++seq;
+    }
+
+    QVector<TrackItem> parsed;
+    parsed.reserve(tracks.size());
+    for (const QJsonValue &v : tracks)
+        parsed.append(parseTrackItem(v.toObject(), usePosition, useSequential, seq));
+
+    if (parsed.isEmpty())
+        return;
+
+    const int first = m_tracks.size();
+    const int last  = first + parsed.size() - 1;
+    beginInsertRows({}, first, last);
+    m_tracks += parsed;
+    endInsertRows();
+
+    if (!m_hasMultipleDiscs && m_sortColumn >= 0) {
+        emit layoutAboutToBeChanged();
+        sortData(m_sortColumn, m_sortOrder);
+        emit layoutChanged();
+        emit sortApplied();
+    }
+}
+
 void TrackListModel::clear()
 {
     beginResetModel();
@@ -124,6 +176,16 @@ void TrackListModel::removeTrack(int row)
     endRemoveRows();
 }
 
+void TrackListModel::notifyFavChanged(qint64 id)
+{
+    for (int r = 0; r < m_tracks.size(); ++r) {
+        if (m_tracks[r].id == id) {
+            const auto idx = index(r, ColTitle);
+            emit dataChanged(idx, idx, {Qt::DecorationRole});
+        }
+    }
+}
+
 void TrackListModel::setFavIds(const QSet<qint64> &ids)
 {
     m_favIds = ids;
@@ -135,23 +197,13 @@ void TrackListModel::setFavIds(const QSet<qint64> &ids)
 void TrackListModel::addFavId(qint64 id)
 {
     m_favIds.insert(id);
-    for (int r = 0; r < m_tracks.size(); ++r) {
-        if (m_tracks[r].id == id) {
-            const auto idx = index(r, ColTitle);
-            emit dataChanged(idx, idx, {Qt::DecorationRole});
-        }
-    }
+    notifyFavChanged(id);
 }
 
 void TrackListModel::removeFavId(qint64 id)
 {
     m_favIds.remove(id);
-    for (int r = 0; r < m_tracks.size(); ++r) {
-        if (m_tracks[r].id == id) {
-            const auto idx = index(r, ColTitle);
-            emit dataChanged(idx, idx, {Qt::DecorationRole});
-        }
-    }
+    notifyFavChanged(id);
 }
 
 void TrackListModel::setPlayingId(qint64 id)
@@ -204,7 +256,7 @@ QVariant TrackListModel::data(const QModelIndex &index, int role) const
             QFont f; f.setBold(true); return f;
         }
         if (role == Qt::ForegroundRole)
-            return QColor(0xFF, 0xB2, 0x32);
+            return Colors::QobuzOrange;
         return {};
     }
 
@@ -227,8 +279,8 @@ QVariant TrackListModel::data(const QModelIndex &index, int role) const
     }
 
     if (role == Qt::ForegroundRole) {
-        if (!t.streamable) return QColor(0x55, 0x55, 0x55);
-        if (isPlaying)     return QColor(0xFF, 0xB2, 0x32); // Qobuz orange
+        if (!t.streamable) return Colors::DisabledText;
+        if (isPlaying)     return Colors::QobuzOrange;
     }
 
     if (role == Qt::DecorationRole && index.column() == ColNumber && isPlaying) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../util/colors.hpp"
+
 #include <QWidget>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -63,7 +65,7 @@ public:
 
         m_meta = new QLabel(info);
         QPalette mp = m_meta->palette();
-        mp.setColor(QPalette::WindowText, QColor(0xaa, 0xaa, 0xaa));
+        mp.setColor(QPalette::WindowText, Colors::SubduedText);
         m_meta->setPalette(mp);
         vlay->addWidget(m_meta);
 

@@ -1,4 +1,5 @@
 #include "genrebrowser.hpp"
+#include "../util/colors.hpp"
 
 #include <QAction>
 #include <QDialog>
@@ -9,7 +10,9 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
 
@@ -120,8 +123,18 @@ GenreBrowserView::GenreBrowserView(QobuzBackend *backend, PlayQueue *queue, QWid
     m_playlistList->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_playlistList->header()->setStretchLastSection(false);
 
+    auto *playlistPage = new QWidget(this);
+    auto *playlistPageLayout = new QVBoxLayout(playlistPage);
+    playlistPageLayout->setContentsMargins(0, 0, 0, 0);
+    playlistPageLayout->setSpacing(0);
+    playlistPageLayout->addWidget(m_playlistList, 1);
+
+    m_loadMorePlaylistsBtn = new QPushButton(tr("Load more playlists…"), this);
+    m_loadMorePlaylistsBtn->hide();
+    playlistPageLayout->addWidget(m_loadMorePlaylistsBtn);
+
     m_resultsStack->addWidget(m_albumList);
-    m_resultsStack->addWidget(m_playlistList);
+    m_resultsStack->addWidget(playlistPage);
     layout->addWidget(m_resultsStack, 1);
 
     connect(m_backend, &QobuzBackend::genresLoaded,
@@ -176,6 +189,16 @@ GenreBrowserView::GenreBrowserView(QobuzBackend *backend, PlayQueue *queue, QWid
             this, &GenreBrowserView::onPlaylistActivated);
     connect(m_playlistList, &QTreeWidget::customContextMenuRequested,
             this, &GenreBrowserView::onPlaylistContextMenu);
+    connect(m_albumList->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &GenreBrowserView::onAlbumScroll);
+    connect(m_playlistList->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &GenreBrowserView::onPlaylistScroll);
+    connect(m_loadMorePlaylistsBtn, &QPushButton::clicked, this, [this] {
+        m_loadMorePlaylistsBtn->hide();
+        requestPlaylistsPage(m_lastPlaylistGenreIds, m_lastPlaylistType,
+                             m_lastPlaylistTags, m_lastPlaylistQuery,
+                             m_playlistOffset, true);
+    });
 
     m_kindCombo->setCurrentIndex(0);
     refreshModeUi();
@@ -358,40 +381,148 @@ void GenreBrowserView::onGenresLoaded(const QJsonObject &result)
 void GenreBrowserView::onFeaturedAlbumsLoaded(const QJsonObject &result)
 {
     m_resultsStack->setCurrentIndex(0);
-    m_albumList->setAlbums(result["items"].toArray());
+    const QString genreIds = result["genre_ids"].toString();
+    const QString type = result["type"].toString();
+    const int offset = result["offset"].toInt();
+    if (genreIds != m_lastAlbumGenreIds || type != m_lastAlbumType)
+        return;
+
+    const QJsonArray items = result["items"].toArray();
+    if (offset <= 0)
+        m_albumList->setAlbums(items);
+    else
+        m_albumList->addAlbums(items);
+
+    m_albumTotal = result["total"].toInt();
+    m_albumOffset = offset + items.size();
+    if (items.isEmpty())
+        m_albumTotal = m_albumOffset;
+    m_loadingAlbums = false;
+
+    if (m_collectAlbumsForDeepShuffle) {
+        if (m_albumOffset < m_albumTotal) {
+            requestAlbumsPage(m_lastAlbumGenreIds, m_lastAlbumType, m_albumOffset, true);
+            return;
+        }
+        m_collectAlbumsForDeepShuffle = false;
+        startDeepShuffleFromLoadedAlbums();
+        return;
+    }
+
+    // If the viewport is not scrollable yet, eagerly fetch more pages.
+    // Deferred: the scrollbar maximum isn't updated until after layout runs.
+    QTimer::singleShot(0, this, [this] {
+        QScrollBar *bar = m_albumList->verticalScrollBar();
+        if (bar && bar->maximum() == 0 && m_albumOffset < m_albumTotal)
+            requestAlbumsPage(m_lastAlbumGenreIds, m_lastAlbumType, m_albumOffset, true);
+    });
 }
 
 void GenreBrowserView::onFeaturedPlaylistsLoaded(const QJsonObject &result)
 {
     m_resultsStack->setCurrentIndex(1);
-    setPlaylistItems(result["items"].toArray());
+    const QString genreIds = result["genre_ids"].toString();
+    const QString type = result["type"].toString();
+    const int offset = result["offset"].toInt();
+    if (genreIds != m_lastPlaylistGenreIds || type != m_lastPlaylistType)
+        return;
+
+    const QJsonArray items = result["items"].toArray();
+    setPlaylistItems(items, offset > 0);
+    m_playlistTotal = result["total"].toInt();
+    m_playlistOffset = offset + items.size();
+    if (items.isEmpty())
+        m_playlistTotal = m_playlistOffset;
+    m_loadingPlaylists = false;
+
+    QTimer::singleShot(0, this, [this] {
+        QScrollBar *bar = m_playlistList->verticalScrollBar();
+        if (bar && bar->maximum() == 0 && m_playlistOffset < m_playlistTotal)
+            requestPlaylistsPage(m_lastPlaylistGenreIds, m_lastPlaylistType, m_lastPlaylistTags, m_lastPlaylistQuery, m_playlistOffset, true);
+    });
 }
 
 void GenreBrowserView::onDiscoverPlaylistsLoaded(const QJsonObject &result)
 {
     m_resultsStack->setCurrentIndex(1);
-    setPlaylistItems(result["items"].toArray());
+    const QString genreIds = result["genre_ids"].toString();
+    const QString tags = result["tags"].toString();
+    const int offset = result["offset"].toInt();
+    if (genreIds != m_lastPlaylistGenreIds || tags != m_lastPlaylistTags)
+        return;
+
+    const QJsonArray items = result["items"].toArray();
+    setPlaylistItems(items, offset > 0);
+    m_playlistTotal = result["total"].toInt();
+    m_playlistOffset = offset + items.size();
+    if (items.isEmpty())
+        m_playlistTotal = m_playlistOffset;
+    m_loadingPlaylists = false;
+
+    QTimer::singleShot(0, this, [this] {
+        QScrollBar *bar = m_playlistList->verticalScrollBar();
+        if (bar && bar->maximum() == 0 && m_playlistOffset < m_playlistTotal)
+            requestPlaylistsPage(m_lastPlaylistGenreIds, m_lastPlaylistType, m_lastPlaylistTags, m_lastPlaylistQuery, m_playlistOffset, true);
+    });
 }
 
 void GenreBrowserView::onPlaylistSearchLoaded(const QJsonObject &result)
 {
     m_resultsStack->setCurrentIndex(1);
-    setPlaylistItems(result["items"].toArray());
+    const QString query = result["query"].toString();
+    const int offset = result["offset"].toInt();
+    if (query != m_lastPlaylistQuery)
+        return;
+
+    const QJsonArray items = result["items"].toArray();
+    setPlaylistItems(items, offset > 0);
+    m_playlistTotal = result["total"].toInt();
+    m_playlistOffset = offset + items.size();
+    if (items.isEmpty())
+        m_playlistTotal = m_playlistOffset;
+    m_loadingPlaylists = false;
+
+    // Eagerly fill the viewport, then switch to a manual "Load more" button.
+    if (m_playlistOffset >= m_playlistTotal) {
+        m_loadMorePlaylistsBtn->hide();
+        m_searchViewportFilled = true;
+    } else if (!m_searchViewportFilled) {
+        QTimer::singleShot(0, this, [this] {
+            QScrollBar *bar = m_playlistList->verticalScrollBar();
+            if (bar && bar->maximum() == 0 && m_playlistOffset < m_playlistTotal) {
+                requestPlaylistsPage(m_lastPlaylistGenreIds, m_lastPlaylistType,
+                                     m_lastPlaylistTags, m_lastPlaylistQuery,
+                                     m_playlistOffset, true);
+            } else {
+                m_searchViewportFilled = true;
+                m_loadMorePlaylistsBtn->setVisible(m_playlistOffset < m_playlistTotal);
+            }
+        });
+    } else {
+        m_loadMorePlaylistsBtn->setVisible(true);
+    }
 }
 
 void GenreBrowserView::onSelectionChanged()
 {
+    m_collectAlbumsForDeepShuffle = false;
+
     if (m_mode == BrowseMode::PlaylistSearch) {
         m_resultsStack->setCurrentIndex(1);
         m_playlistSearchLabel->setVisible(true);
         m_playlistSearchBox->setVisible(true);
         m_playlistSearchBtn->setVisible(true);
         m_deepShuffleBtn->setVisible(false);
+        m_deepShuffleBtn->setEnabled(true);
+        m_deepShuffleBtn->setText(tr("⇄  Deep Shuffle"));
         const QString query = m_playlistSearchBox->text().trimmed();
         if (query.size() < 2) {
             m_playlistList->clear();
+            m_playlistOffset = 0;
+            m_playlistTotal = 0;
+            m_loadingPlaylists = false;
         } else {
-            m_backend->searchPlaylists(query, 8, 0);
+            requestPlaylistsPage(QString(), QStringLiteral("search"), QString(), query, 0, false);
         }
         return;
     }
@@ -408,20 +539,25 @@ void GenreBrowserView::onSelectionChanged()
 
     if (kind == QStringLiteral("playlists")) {
         m_resultsStack->setCurrentIndex(1);
+        m_deepShuffleBtn->setVisible(false);
+        m_deepShuffleBtn->setEnabled(true);
+        m_deepShuffleBtn->setText(tr("⇄  Deep Shuffle"));
         if (type == QStringLiteral("discover-new"))
-            m_backend->discoverPlaylists(genreIds, QStringLiteral("new"), 25, 0);
+            requestPlaylistsPage(genreIds, type, QStringLiteral("new"), QString(), 0, false);
         else if (type == QStringLiteral("discover-hires"))
-            m_backend->discoverPlaylists(genreIds, QStringLiteral("hi-res"), 25, 0);
+            requestPlaylistsPage(genreIds, type, QStringLiteral("hi-res"), QString(), 0, false);
         else if (type == QStringLiteral("discover-focus"))
-            m_backend->discoverPlaylists(genreIds, QStringLiteral("focus"), 25, 0);
+            requestPlaylistsPage(genreIds, type, QStringLiteral("focus"), QString(), 0, false);
         else if (type == QStringLiteral("discover-qobuzdigs"))
-            m_backend->discoverPlaylists(genreIds, QStringLiteral("qobuzdigs"), 25, 0);
+            requestPlaylistsPage(genreIds, type, QStringLiteral("qobuzdigs"), QString(), 0, false);
         else
-            m_backend->getFeaturedPlaylists(genreIds, type, 25, 0);
+            requestPlaylistsPage(genreIds, type, QString(), QString(), 0, false);
     } else {
         m_resultsStack->setCurrentIndex(0);
         m_deepShuffleBtn->setVisible(m_mode == BrowseMode::Genres);
-        m_backend->getFeaturedAlbums(genreIds, type, 50, 0);
+        m_deepShuffleBtn->setEnabled(true);
+        m_deepShuffleBtn->setText(tr("⇄  Deep Shuffle"));
+        requestAlbumsPage(genreIds, type, 0, false);
     }
 }
 
@@ -436,16 +572,125 @@ QStringList GenreBrowserView::currentAlbumIds() const
     return ids;
 }
 
-void GenreBrowserView::onDeepShuffleClicked()
+void GenreBrowserView::startDeepShuffleFromLoadedAlbums()
 {
     const QStringList albumIds = currentAlbumIds();
-    if (albumIds.isEmpty())
+    if (albumIds.isEmpty()) {
+        m_deepShuffleBtn->setEnabled(true);
+        m_deepShuffleBtn->setText(tr("⇄  Deep Shuffle"));
         return;
+    }
 
     m_waitingDeepShuffle = true;
     m_deepShuffleBtn->setEnabled(false);
     m_deepShuffleBtn->setText(tr("Loading…"));
     m_backend->getAlbumsTracks(albumIds);
+}
+
+void GenreBrowserView::requestAlbumsPage(const QString &genreIds, const QString &type, int offset, bool append)
+{
+    if (append && m_loadingAlbums)
+        return;
+
+    if (!append) {
+        m_loadingAlbums = false;
+        m_albumOffset = 0;
+        m_albumTotal = 0;
+    }
+
+    m_lastAlbumGenreIds = genreIds;
+    m_lastAlbumType = type;
+    m_loadingAlbums = true;
+    m_backend->getFeaturedAlbums(genreIds, type, 50, static_cast<quint32>(offset));
+}
+
+void GenreBrowserView::requestPlaylistsPage(const QString &genreIds, const QString &type, const QString &tags, const QString &query, int offset, bool append)
+{
+    if (append && m_loadingPlaylists)
+        return;
+
+    if (!append) {
+        m_loadingPlaylists = false;
+        m_playlistOffset = 0;
+        m_playlistTotal = 0;
+        m_loadMorePlaylistsBtn->hide();
+        if (type == QStringLiteral("search"))
+            m_searchViewportFilled = false;
+    }
+
+    m_lastPlaylistGenreIds = genreIds;
+    m_lastPlaylistType = type;
+    m_lastPlaylistTags = tags;
+    m_lastPlaylistQuery = query;
+    m_loadingPlaylists = true;
+
+    if (type == QStringLiteral("search")) {
+        m_backend->searchPlaylists(query, 25, static_cast<quint32>(offset));
+    } else if (type.startsWith(QStringLiteral("discover-"))) {
+        m_backend->discoverPlaylists(genreIds, tags, 25, static_cast<quint32>(offset));
+    } else {
+        m_backend->getFeaturedPlaylists(genreIds, type, 25, static_cast<quint32>(offset));
+    }
+}
+
+void GenreBrowserView::onAlbumScroll(int value)
+{
+    if (m_mode != BrowseMode::Genres)
+        return;
+    if (m_kindCombo->currentData().toString() != QStringLiteral("albums"))
+        return;
+    if (m_loadingAlbums)
+        return;
+    if (m_albumOffset >= m_albumTotal)
+        return;
+
+    QScrollBar *bar = m_albumList->verticalScrollBar();
+    if (!bar || value < (bar->maximum() - 12))
+        return;
+
+    requestAlbumsPage(m_lastAlbumGenreIds, m_lastAlbumType, m_albumOffset, true);
+}
+
+void GenreBrowserView::onPlaylistScroll(int value)
+{
+    // Search results use a manual "Load more" button instead of infinite scroll.
+    if (m_lastPlaylistType == QStringLiteral("search"))
+        return;
+    if (m_loadingPlaylists)
+        return;
+    if (m_playlistOffset >= m_playlistTotal)
+        return;
+
+    QScrollBar *bar = m_playlistList->verticalScrollBar();
+    if (!bar || value < (bar->maximum() - 12))
+        return;
+
+    requestPlaylistsPage(
+        m_lastPlaylistGenreIds,
+        m_lastPlaylistType,
+        m_lastPlaylistTags,
+        m_lastPlaylistQuery,
+        m_playlistOffset,
+        true);
+}
+
+void GenreBrowserView::onDeepShuffleClicked()
+{
+    m_deepShuffleBtn->setEnabled(false);
+    m_deepShuffleBtn->setText(tr("Loading…"));
+
+    if (m_loadingAlbums) {
+        m_collectAlbumsForDeepShuffle = true;
+        return;
+    }
+
+    if (m_albumOffset < m_albumTotal) {
+        m_collectAlbumsForDeepShuffle = true;
+        requestAlbumsPage(m_lastAlbumGenreIds, m_lastAlbumType, m_albumOffset, true);
+        return;
+    }
+
+    startDeepShuffleFromLoadedAlbums();
 }
 
 bool GenreBrowserView::tryHandleDeepShuffleTracks(const QJsonArray &tracks)
@@ -454,6 +699,7 @@ bool GenreBrowserView::tryHandleDeepShuffleTracks(const QJsonArray &tracks)
         return false;
 
     m_waitingDeepShuffle = false;
+    m_collectAlbumsForDeepShuffle = false;
     m_deepShuffleBtn->setEnabled(true);
     m_deepShuffleBtn->setText(tr("⇄  Deep Shuffle"));
 
@@ -477,16 +723,28 @@ void GenreBrowserView::onAlbumContextMenu(const QPoint &pos)
 
     const QString albumId = item->data(1, Qt::UserRole).toString();
     const qint64 artistId = item->data(2, Qt::UserRole).toLongLong();
+    const QString albumTitle = item->text(1);
+    const QString artistName = item->text(2);
 
     QMenu menu(this);
 
-    auto *openAlbum = menu.addAction(tr("Open Album"));
+    auto *openAlbum = menu.addAction(
+        QIcon(":/res/icons/view-media-album-cover.svg"),
+        tr("Open album: %1").arg(QString(albumTitle).replace(QLatin1Char('&'), QStringLiteral("&&"))));
     connect(openAlbum, &QAction::triggered, this, [this, albumId] {
         emit albumSelected(albumId);
     });
 
+    auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+    connect(addFav, &QAction::triggered, this, [this, albumId] {
+        m_backend->addFavAlbum(albumId);
+    });
+
     if (artistId > 0) {
-        auto *openArtist = menu.addAction(tr("Open Artist"));
+        menu.addSeparator();
+        auto *openArtist = menu.addAction(
+            QIcon(":/res/icons/view-media-artist.svg"),
+            tr("Open artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
         connect(openArtist, &QAction::triggered, this, [this, artistId] {
             emit artistSelected(artistId);
         });
@@ -516,16 +774,18 @@ void GenreBrowserView::onPlaylistContextMenu(const QPoint &pos)
         return;
 
     QMenu menu(this);
-    auto *openPlaylist = menu.addAction(tr("Open Playlist"));
+    auto *openPlaylist = menu.addAction(
+        QIcon(":/res/icons/view-media-playlist.svg"), tr("Open playlist"));
     connect(openPlaylist, &QAction::triggered, this, [this, playlistId] {
         emit playlistSelected(playlistId);
     });
     menu.exec(m_playlistList->viewport()->mapToGlobal(pos));
 }
 
-void GenreBrowserView::setPlaylistItems(const QJsonArray &items)
+void GenreBrowserView::setPlaylistItems(const QJsonArray &items, bool append)
 {
-    m_playlistList->clear();
+    if (!append)
+        m_playlistList->clear();
 
     QFont tagFont;
     tagFont.setBold(true);
@@ -541,7 +801,7 @@ void GenreBrowserView::setPlaylistItems(const QJsonArray &items)
         auto *item = new QTreeWidgetItem(m_playlistList,
             QStringList{QStringLiteral("P"), name, owner, tracksCount > 0 ? QString::number(tracksCount) : QString()});
         item->setData(0, Qt::UserRole, playlistId);
-        item->setForeground(0, QColor(QStringLiteral("#2B7CD3")));
+        item->setForeground(0, Colors::BadgeBlue);
         item->setFont(0, tagFont);
         item->setTextAlignment(0, Qt::AlignCenter);
     }

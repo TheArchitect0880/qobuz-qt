@@ -51,6 +51,9 @@ public:
     void setTracks(const QJsonArray &tracks,
                    bool usePosition   = false,
                    bool useSequential = false);
+    void appendTracks(const QJsonArray &tracks,
+                      bool usePosition   = false,
+                      bool useSequential = false);
     void clear();
     void setPlayingId(qint64 id);
     qint64 playingId() const { return m_playingId; }
@@ -102,4 +105,10 @@ private:
 
     // Sort m_tracks in-place without emitting any signals.
     void sortData(int column, Qt::SortOrder order);
+
+    // Parse a single JSON track object into a TrackItem.
+    static TrackItem parseTrackItem(const QJsonObject &t, bool usePosition, bool useSequential, int &seq);
+
+    // Emit dataChanged(DecorationRole) for all rows matching id.
+    void notifyFavChanged(qint64 id);
 };

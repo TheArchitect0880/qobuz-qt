@@ -67,6 +67,7 @@ void qobuz_backend_get_dynamic_suggestions(QobuzBackendOpaque *backend, const ch
 void qobuz_backend_get_album(QobuzBackendOpaque *backend, const char *album_id);
 void qobuz_backend_get_artist(QobuzBackendOpaque *backend, int64_t artist_id);
 void qobuz_backend_get_playlist(QobuzBackendOpaque *backend, int64_t playlist_id, uint32_t offset, uint32_t limit);
+void qobuz_backend_get_playlist_all(QobuzBackendOpaque *backend, int64_t playlist_id);
 
 // Favorites
 void qobuz_backend_get_fav_tracks(QobuzBackendOpaque *backend, uint32_t offset, uint32_t limit);

@@ -95,6 +95,11 @@ void QobuzBackend::getPlaylist(qint64 playlistId, quint32 offset, quint32 limit)
     qobuz_backend_get_playlist(m_backend, playlistId, offset, limit);
 }
 
+void QobuzBackend::getPlaylistAll(qint64 playlistId)
+{
+    qobuz_backend_get_playlist_all(m_backend, playlistId);
+}
+
 void QobuzBackend::getGenres()
 {
     qobuz_backend_get_genres(m_backend);

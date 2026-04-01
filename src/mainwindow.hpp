@@ -72,5 +72,13 @@ private:
     bool m_nextTrackPrefetched = false;
 
     void setupMenuBar();
+    void setupDocks();
+    void setupScrobbler();
+    void setupGapless();
+    void setupMpris();
+    void connectBackendSignals();
+    void connectLibrarySignals();
+    void connectContentSignals();
+    void connectToolbarSignals();
     void tryRestoreSession();
 };

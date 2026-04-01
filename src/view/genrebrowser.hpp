@@ -14,6 +14,7 @@
 #include <QStackedWidget>
 #include <QTreeWidget>
 #include <QWidget>
+#include <QScrollBar>
 
 class GenreBrowserView : public QWidget
 {
@@ -48,6 +49,8 @@ private slots:
     void onPlaylistActivated(QTreeWidgetItem *item, int column);
     void onPlaylistContextMenu(const QPoint &pos);
     void onDeepShuffleClicked();
+    void onAlbumScroll(int value);
+    void onPlaylistScroll(int value);
 
 private:
     QobuzBackend *m_backend = nullptr;
@@ -67,17 +70,35 @@ private:
     QStackedWidget *m_resultsStack = nullptr;
     AlbumListView *m_albumList = nullptr;
     QTreeWidget *m_playlistList = nullptr;
+    QPushButton *m_loadMorePlaylistsBtn = nullptr;
+    bool m_searchViewportFilled = false;
     BrowseMode m_mode = BrowseMode::Genres;
     bool m_genresLoaded = false;
     int m_lastGenreComboIndex = 0;
     QSet<qint64> m_multiGenreIds;
     bool m_waitingDeepShuffle = false;
+    bool m_collectAlbumsForDeepShuffle = false;
+    bool m_loadingAlbums = false;
+    bool m_loadingPlaylists = false;
+    int m_albumOffset = 0;
+    int m_albumTotal = 0;
+    int m_playlistOffset = 0;
+    int m_playlistTotal = 0;
+    QString m_lastAlbumGenreIds;
+    QString m_lastAlbumType;
+    QString m_lastPlaylistGenreIds;
+    QString m_lastPlaylistType;
+    QString m_lastPlaylistTags;
+    QString m_lastPlaylistQuery;
 
     void refreshModeUi();
     void refreshGenreTypeChoices();
     QString currentGenreIds() const;
     QStringList currentAlbumIds() const;
+    void startDeepShuffleFromLoadedAlbums();
+    void requestAlbumsPage(const QString &genreIds, const QString &type, int offset, bool append);
+    void requestPlaylistsPage(const QString &genreIds, const QString &type, const QString &tags, const QString &query, int offset, bool append);
     bool chooseMultiGenres();
     void updateMultiGenreLabel();
-    void setPlaylistItems(const QJsonArray &items);
+    void setPlaylistItems(const QJsonArray &items, bool append = false);
 };
