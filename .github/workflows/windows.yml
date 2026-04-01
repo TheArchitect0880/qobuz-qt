@@ -33,7 +33,7 @@ jobs:
       run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
     - name: Build Application
-      run: cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+      run: cmake --build build --config Release
 
     - name: Bundle Executable (windeployqt)
       run: |
