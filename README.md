@@ -10,11 +10,15 @@ Much of the UI structure and layout is based on [spotify-qt](https://github.com/
 
 ## Screenshots
 
-<!-- Add screenshots here -->
+<img width="1720" height="1388" alt="image" src="https://github.com/user-attachments/assets/fd7d6e41-cc78-42a1-bcb0-98b354e8ef33" />
+<img width="1720" height="1388" alt="image" src="https://github.com/user-attachments/assets/10b2cc77-fc7b-439e-a39b-c805e6250af0" />
+<img width="1720" height="1388" alt="image" src="https://github.com/user-attachments/assets/11eb865e-e76c-422a-89ce-75cb6697e6bd" />
+
+
 
 ## Features
 
-- Login via Qobuz email/password (OAuth2)
+- Login via Qobuz email/password
 - Unified search across tracks, albums, and artists
 - Album and artist detail pages with metadata, cover art, and biography
 - Audio playback with support for Hi-Res 24-bit/192 kHz, Hi-Res 24-bit/96 kHz, CD quality 16-bit lossless, and MP3 320 kbps
