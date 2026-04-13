@@ -1,9 +1,12 @@
 #include "maintoolbar.hpp"
 #include "../util/settings.hpp"
+#include "../util/trackinfo.hpp"
+#include "../util/albumqueuehelper.hpp"
 #include "../model/tracklistmodel.hpp"
 
 #include <QNetworkRequest>
 #include <QResizeEvent>
+#include <QMouseEvent>
 #include <QMenu>
 #include <QDateTime>
 #include <QSignalBlocker>
@@ -19,6 +22,7 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
     setIconSize(QSize(22, 22));
 
     m_nam = new QNetworkAccessManager(this);
+    m_albumQueueHelper = new AlbumQueueHelper(m_backend, m_queue, this);
     connect(m_nam, &QNetworkAccessManager::finished, this, &MainToolBar::onAlbumArtReady);
 
     // ---- Album art ----
@@ -27,12 +31,13 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
     m_artLabel->setScaledContents(true);
     m_artLabel->setStyleSheet("border: 1px solid #444; background: #1a1a1a; border-radius: 3px;");
     m_artLabel->setPixmap(QIcon(":/res/icons/view-media-album-cover.svg").pixmap(32, 32));
+    m_artLabel->setCursor(Qt::PointingHandCursor);
+    m_artLabel->installEventFilter(this);
     addWidget(m_artLabel);
 
     // ---- Track label ----
     m_trackLabel = new QLabel(tr("Not playing"), this);
-    m_trackLabel->setMinimumWidth(80);
-    m_trackLabel->setMaximumWidth(200);
+    m_trackLabel->setFixedWidth(140);
     m_trackLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     m_trackLabel->setTextFormat(Qt::RichText);
     addWidget(m_trackLabel);
@@ -55,10 +60,18 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
         auto *addQueue = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to queue"));
         menu.addSeparator();
 
-        auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
-        connect(addFav, &QAction::triggered, this, [this, trackId] {
-            emit favTrackRequested(trackId);
-        });
+        const bool isFav = m_favTrackIds.contains(trackId);
+        if (isFav) {
+            auto *remFav = menu.addAction(QIcon(":/res/icons/non-starred-symbolic.svg"), tr("Remove from favorites"));
+            connect(remFav, &QAction::triggered, this, [this, trackId] {
+                emit unfavTrackRequested(trackId);
+            });
+        } else {
+            auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+            connect(addFav, &QAction::triggered, this, [this, trackId] {
+                emit favTrackRequested(trackId);
+            });
+        }
 
         if (!albumId.isEmpty() || artistId > 0)
             menu.addSeparator();
@@ -79,6 +92,21 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
             });
         }
 
+        // Album queue actions
+        if (!albumId.isEmpty()) {
+            menu.addSeparator();
+            auto *albumNext = menu.addAction(
+                QIcon(":/res/icons/media-skip-forward.svg"), tr("Play album next"));
+            connect(albumNext, &QAction::triggered, this, [this, albumId] {
+                m_albumQueueHelper->request(albumId, AlbumQueueHelper::PlayNext);
+            });
+            auto *albumQueue = menu.addAction(
+                QIcon(":/res/icons/media-playlist-append.svg"), tr("Add album to queue"));
+            connect(albumQueue, &QAction::triggered, this, [this, albumId] {
+                m_albumQueueHelper->request(albumId, AlbumQueueHelper::AddToQueue);
+            });
+        }
+
         if (!m_userPlaylists.isEmpty()) {
             menu.addSeparator();
             auto *plMenu = menu.addMenu(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to playlist"));
@@ -90,11 +118,18 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
             }
         }
 
+        // Track info
+        menu.addSeparator();
+        auto *infoAction = menu.addAction(tr("Track info..."));
+
         connect(playNext, &QAction::triggered, this, [this] {
             m_queue->playNext(m_currentTrack);
         });
         connect(addQueue, &QAction::triggered, this, [this] {
             m_queue->addToQueue(m_currentTrack);
+        });
+        connect(infoAction, &QAction::triggered, this, [this] {
+            TrackInfoDialog::show(m_currentTrack, this);
         });
 
         menu.exec(m_trackLabel->mapToGlobal(pos));
@@ -190,6 +225,20 @@ void MainToolBar::resizeEvent(QResizeEvent *event)
     m_rightSpacer->setMinimumWidth(spacerWidth);
 }
 
+bool MainToolBar::eventFilter(QObject *obj, QEvent *event)
+{
+    if (obj == m_artLabel && event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton && !m_currentTrack.isEmpty()) {
+            const QString albumId = m_currentTrack["album"].toObject()["id"].toString();
+            if (!albumId.isEmpty())
+                emit albumRequested(albumId);
+        }
+        return true;
+    }
+    return QToolBar::eventFilter(obj, event);
+}
+
 // ---- public ----
 
 void MainToolBar::setPlaying(bool playing)
@@ -209,12 +258,15 @@ void MainToolBar::setCurrentTrack(const QJsonObject &track)
 
     if (title.isEmpty()) {
         m_trackLabel->setText(tr("Not playing"));
+        m_trackLabel->setToolTip(QString());
     } else if (artist.isEmpty()) {
         m_trackLabel->setText(title.toHtmlEscaped());
+        m_trackLabel->setToolTip(title);
     } else {
         m_trackLabel->setText(QStringLiteral("<span style='font-weight:600;'>%1</span>"
             "<br><span style='font-size:small; color:#aaa;'>%2</span>")
             .arg(title.toHtmlEscaped(), artist.toHtmlEscaped()));
+        m_trackLabel->setToolTip(QStringLiteral("%1\n%2").arg(title, artist));
     }
 
     const QString artUrl = track["album"].toObject()["image"].toObject()["small"].toString();
@@ -303,6 +355,7 @@ void MainToolBar::onBackendStateChanged(const QString &state)
 
 void MainToolBar::onTrackChanged(const QJsonObject &track)
 {
+    m_prefetchedTrackId = 0;
     m_seekPending = false;
     m_seeking = false;
     setCurrentTrack(track);
@@ -325,6 +378,22 @@ void MainToolBar::onTrackChanged(const QJsonObject &track)
 
 void MainToolBar::onPositionChanged(quint64 position, quint64 duration)
 {
+    // Gapless prefetch: buffer the next track in the backend before the current one ends
+    if (AppSettings::instance().gaplessEnabled() && duration > 0) {
+        if ((position > duration / 2) || (duration > 60 && (duration - position) <= 60)) {
+            if (m_prefetchedTrackId == 0 && m_queue->canGoNext()) {
+                const auto upcoming = m_queue->upcomingTracks(1);
+                if (!upcoming.isEmpty()) {
+                    const qint64 nextId = static_cast<qint64>(upcoming.first()["id"].toDouble());
+                    if (nextId > 0) {
+                        m_prefetchedTrackId = nextId;
+                        m_backend->prefetchTrack(nextId, AppSettings::instance().preferredFormat());
+                    }
+                }
+            }
+        }
+    }
+
     if (m_seekPending) {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const quint64 delta = (position > m_pendingSeekTarget)
@@ -357,9 +426,16 @@ void MainToolBar::onTrackTransitioned()
 {
     if (m_queue->canGoNext()) {
         const QJsonObject track = m_queue->advance();
+        const qint64 id = static_cast<qint64>(track["id"].toDouble());
         setCurrentTrack(track);
         m_backend->manuallyEmitTrackChanged(track);
+        // If play-next was added after the gapless prefetch, the backend has a
+        // different track buffered. Override it with an explicit playTrack call.
+        if (m_prefetchedTrackId != 0 && id != m_prefetchedTrackId && id > 0)
+            m_backend->playTrack(id, AppSettings::instance().preferredFormat());
+        m_prefetchedTrackId = 0;
     } else {
+        m_prefetchedTrackId = 0;
         onTrackFinished();
     }
 }

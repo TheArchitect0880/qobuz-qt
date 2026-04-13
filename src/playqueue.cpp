@@ -135,7 +135,7 @@ QJsonObject PlayQueue::stepBack()
 {
     if (m_index > 0) --m_index;
     emit queueChanged();
-    return current();
+    return m_index < m_queue.size() ? m_queue.at(m_index) : QJsonObject{};
 }
 
 bool PlayQueue::canGoNext() const

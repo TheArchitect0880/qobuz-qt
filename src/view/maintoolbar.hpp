@@ -2,6 +2,7 @@
 
 #include "../backend/qobuzbackend.hpp"
 #include "../playqueue.hpp"
+#include "../util/albumqueuehelper.hpp"
 #include "../widget/volumebutton.hpp"
 #include "../widget/clickableslider.hpp"
 #include "../util/icon.hpp"
@@ -13,6 +14,7 @@
 #include <QNetworkReply>
 #include <QJsonObject>
 #include <QPair>
+#include <QSet>
 #include <QVector>
 
 class MainToolBar : public QToolBar
@@ -29,6 +31,9 @@ public:
     void setSearchToggleChecked(bool checked);
 
     void setUserPlaylists(const QVector<QPair<qint64, QString>> &playlists) { m_userPlaylists = playlists; }
+    void setFavTrackIds(const QSet<qint64> &ids) { m_favTrackIds = ids; }
+    void addFavTrackId(qint64 id) { m_favTrackIds.insert(id); }
+    void removeFavTrackId(qint64 id) { m_favTrackIds.remove(id); }
 
 signals:
     void searchToggled(bool visible);
@@ -37,9 +42,11 @@ signals:
     void artistRequested(qint64 artistId);
     void addToPlaylistRequested(qint64 trackId, qint64 playlistId);
     void favTrackRequested(qint64 trackId);
+    void unfavTrackRequested(qint64 trackId);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 private slots:
     void onPlayPause();
@@ -88,6 +95,7 @@ private:
     QAction         *m_search      = nullptr;
 
     QNetworkAccessManager *m_nam = nullptr;
+    AlbumQueueHelper      *m_albumQueueHelper = nullptr;
     QString     m_currentArtUrl;
     QJsonObject m_currentTrack;
     QVector<RecentTrackSeed> m_recentTracks;
@@ -97,8 +105,10 @@ private:
     quint64     m_pendingSeekTarget = 0;
     qint64      m_pendingSeekStartedMs = 0;
     bool        m_fetchingAutoplay = false;
+    qint64      m_prefetchedTrackId = 0;
 
     QVector<QPair<qint64, QString>> m_userPlaylists;
+    QSet<qint64> m_favTrackIds;
 
     void requestAutoplaySuggestions();
 };
