@@ -1,4 +1,5 @@
 #include "queuepanel.hpp"
+#include "../util/trackinfo.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -12,6 +13,7 @@ static constexpr int UpcomingIndexRole = Qt::UserRole + 1;
 static constexpr int IsPlayNextRole    = Qt::UserRole + 2;
 static constexpr int ArtistRole        = Qt::UserRole + 3;
 static constexpr int DurationRole      = Qt::UserRole + 4;
+static constexpr int TrackJsonRole     = Qt::UserRole + 5;
 
 // ---- Custom delegate -------------------------------------------------------
 
@@ -117,12 +119,14 @@ public:
 
 // ---- QueuePanel ------------------------------------------------------------
 
-QueuePanel::QueuePanel(PlayQueue *queue, QWidget *parent)
+QueuePanel::QueuePanel(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
     : QDockWidget(tr("Queue"), parent)
+    , m_backend(backend)
     , m_queue(queue)
 {
     setObjectName(QStringLiteral("queuePanel"));
-    setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
+    m_albumQueueHelper = new AlbumQueueHelper(m_backend, m_queue, this);
 
     auto *container = new QWidget(this);
     auto *layout    = new QVBoxLayout(container);
@@ -167,9 +171,9 @@ void QueuePanel::refresh()
     const QVector<QJsonObject> upcoming = m_queue->upcomingTracks();
     const int playNextCount = m_queue->playNextCount();
 
-    m_countLabel->setText(tr("Up next: %1 track(s)").arg(upcoming.size()));
     m_clearBtn->setEnabled(!upcoming.isEmpty());
 
+    int totalDuration = 0;
     for (int i = 0; i < upcoming.size(); ++i) {
         const QJsonObject &t = upcoming.at(i);
         const QString base    = t["title"].toString();
@@ -179,12 +183,27 @@ void QueuePanel::refresh()
             ? t["album"].toObject()["artist"].toObject()["name"].toString()
             : t["performer"].toObject()["name"].toString();
         const int duration   = t["duration"].toInt();
+        totalDuration += duration;
 
         auto *item = new QListWidgetItem(title, m_list);
         item->setData(UpcomingIndexRole, i);
         item->setData(IsPlayNextRole, i < playNextCount);
         item->setData(ArtistRole, artist);
         item->setData(DurationRole, duration);
+        item->setData(TrackJsonRole, QVariant::fromValue(t));
+    }
+
+    // Format header with track count and total duration
+    if (upcoming.isEmpty()) {
+        m_countLabel->setText(tr("Up next: 0 tracks"));
+    } else {
+        const int h = totalDuration / 3600;
+        const int m = (totalDuration % 3600) / 60;
+        const QString durStr = h > 0
+            ? QStringLiteral("%1h %2m").arg(h).arg(m)
+            : QStringLiteral("%1 min").arg(m);
+        m_countLabel->setText(tr("Up next: %1 track(s)  ·  %2")
+            .arg(upcoming.size()).arg(durStr));
     }
 
     m_refreshing = false;
@@ -215,6 +234,7 @@ void QueuePanel::onRowsMoved()
     m_refreshing = true;
     m_queue->setUpcomingOrder(newOrder);
     m_refreshing = false;
+    refresh(); // update UpcomingIndexRole values after reorder
 }
 
 void QueuePanel::onContextMenu(const QPoint &pos)
@@ -223,13 +243,100 @@ void QueuePanel::onContextMenu(const QPoint &pos)
     if (!item) return;
 
     const int idx = item->data(UpcomingIndexRole).toInt();
+    const QJsonObject trackJson = item->data(TrackJsonRole).toJsonObject();
+    const qint64 trackId = static_cast<qint64>(trackJson["id"].toDouble());
 
     QMenu menu(this);
+
+    // Play now
+    auto *playNow = menu.addAction(QIcon(":/res/icons/media-playback-start.svg"), tr("Play now"));
+    connect(playNow, &QAction::triggered, this, [this, idx] {
+        const QJsonObject track = m_queue->skipToUpcoming(idx);
+        if (track.isEmpty()) return;
+        const qint64 id = static_cast<qint64>(track["id"].toDouble());
+        emit skipToTrackRequested(id);
+    });
+
+    // Queue management
     auto *removeAct = menu.addAction(QIcon(":/res/icons/list-remove.svg"), tr("Remove from queue"));
     auto *toTopAct  = menu.addAction(QIcon(":/res/icons/go-up.svg"),      tr("Move to top (play next)"));
-
     connect(removeAct, &QAction::triggered, this, [this, idx] { m_queue->removeUpcoming(idx); });
     connect(toTopAct,  &QAction::triggered, this, [this, idx] { m_queue->moveUpcomingToTop(idx); });
+
+    if (trackId <= 0) {
+        menu.exec(m_list->viewport()->mapToGlobal(pos));
+        return;
+    }
+
+    // Favorites
+    menu.addSeparator();
+    const bool isFav = m_favTrackIds.contains(trackId);
+    if (isFav) {
+        auto *remFav = menu.addAction(QIcon(":/res/icons/non-starred-symbolic.svg"), tr("Remove from favorites"));
+        connect(remFav, &QAction::triggered, this, [this, trackId] {
+            emit unfavTrackRequested(trackId);
+        });
+    } else {
+        auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+        connect(addFav, &QAction::triggered, this, [this, trackId] {
+            emit favTrackRequested(trackId);
+        });
+    }
+
+    // Open album / artist + album queue
+    const QString albumId = trackJson["album"].toObject()["id"].toString();
+    const qint64 artistId = static_cast<qint64>(
+        trackJson["performer"].toObject()["id"].toDouble());
+    const QString artistName = trackJson["performer"].toObject()["name"].toString();
+    const QString albumTitle = trackJson["album"].toObject()["title"].toString();
+
+    if (!albumId.isEmpty()) {
+        menu.addSeparator();
+        auto *openAlbum = menu.addAction(
+            QIcon(":/res/icons/view-media-album-cover.svg"),
+            tr("Open album: %1").arg(QString(albumTitle).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+        connect(openAlbum, &QAction::triggered, this, [this, albumId] {
+            m_backend->getAlbum(albumId);
+        });
+        auto *albumNext = menu.addAction(
+            QIcon(":/res/icons/media-skip-forward.svg"), tr("Play album next"));
+        connect(albumNext, &QAction::triggered, this, [this, albumId] {
+            m_albumQueueHelper->request(albumId, AlbumQueueHelper::PlayNext);
+        });
+        auto *albumQueue = menu.addAction(
+            QIcon(":/res/icons/media-playlist-append.svg"), tr("Add album to queue"));
+        connect(albumQueue, &QAction::triggered, this, [this, albumId] {
+            m_albumQueueHelper->request(albumId, AlbumQueueHelper::AddToQueue);
+        });
+    }
+    if (artistId > 0) {
+        if (albumId.isEmpty()) menu.addSeparator();
+        auto *openArtist = menu.addAction(
+            QIcon(":/res/icons/view-media-artist.svg"),
+            tr("Open artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+        connect(openArtist, &QAction::triggered, this, [this, artistId] {
+            m_backend->getArtist(artistId);
+        });
+    }
+
+    // Add to playlist
+    if (!m_userPlaylists.isEmpty()) {
+        menu.addSeparator();
+        auto *plMenu = menu.addMenu(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to playlist"));
+        for (const auto &pl : m_userPlaylists) {
+            auto *act = plMenu->addAction(QString(pl.second).replace(QLatin1Char('&'), QStringLiteral("&&")));
+            connect(act, &QAction::triggered, this, [this, trackId, plId = pl.first] {
+                emit addToPlaylistRequested(trackId, plId);
+            });
+        }
+    }
+
+    // Track info
+    menu.addSeparator();
+    auto *infoAction = menu.addAction(tr("Track info..."));
+    connect(infoAction, &QAction::triggered, this, [this, trackJson] {
+        TrackInfoDialog::show(trackJson, this);
+    });
 
     menu.exec(m_list->viewport()->mapToGlobal(pos));
 }

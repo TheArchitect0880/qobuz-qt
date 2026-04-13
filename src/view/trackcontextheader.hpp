@@ -49,6 +49,8 @@ public:
         tf.setBold(true);
         m_title->setFont(tf);
         m_title->setWordWrap(true);
+        m_title->setMinimumWidth(0);
+        m_title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         vlay->addWidget(m_title);
 
         m_subtitle = new QPushButton(info);
@@ -58,12 +60,16 @@ public:
             "QPushButton:enabled:hover { color: #FFB232; }"
             "QPushButton:!enabled { color: palette(text); }"
         ));
+        m_subtitle->setMinimumWidth(0);
+        m_subtitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         QFont sf = m_subtitle->font();
         sf.setPointSize(sf.pointSize() + 1);
         m_subtitle->setFont(sf);
         vlay->addWidget(m_subtitle);
 
         m_meta = new QLabel(info);
+        m_meta->setMinimumWidth(0);
+        m_meta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         QPalette mp = m_meta->palette();
         mp.setColor(QPalette::WindowText, Colors::SubduedText);
         m_meta->setPalette(mp);

@@ -18,8 +18,10 @@
 #include <QSet>
 #include <QPair>
 #include <QString>
+#include <QByteArray>
 
 class Mpris;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow
 {
@@ -28,6 +30,9 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QobuzBackend *backend, QWidget *parent = nullptr);
     static QSize defaultSize() { return {1100, 700}; }
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
     void onLoginSuccess(const QString &token, const QJsonObject &user);
@@ -47,6 +52,7 @@ private slots:
     void onSearchToggled(bool visible);
     void onPlaylistCreated(const QJsonObject &playlist);
     void onUserPlaylistsChanged(const QVector<QPair<qint64, QString>> &playlists);
+    void resetLayout();
 
     void showLoginDialog();
     void showSettingsDialog();
@@ -58,6 +64,8 @@ private:
     QSet<qint64> m_userPlaylistIds;
     QSet<QString> m_favAlbumIds;
     QSet<qint64> m_favArtistIds;
+    QSet<qint64> m_favTrackIds;
+    bool m_showFavTracksOnLoad = false;
     bool m_showFavAlbumsOnLoad = false;
     bool m_showFavArtistsOnLoad = false;
     MainToolBar     *m_toolBar     = nullptr;
@@ -69,7 +77,7 @@ private:
     QDockWidget     *m_libraryDock = nullptr;
     LastFmScrobbler *m_scrobbler   = nullptr;
     Mpris           *m_mpris       = nullptr;
-    bool m_nextTrackPrefetched = false;
+    QByteArray       m_defaultWindowState;
 
     void setupMenuBar();
     void setupDocks();
@@ -81,4 +89,8 @@ private:
     void connectContentSignals();
     void connectToolbarSignals();
     void tryRestoreSession();
+    void restoreWindowLayout();
+    void saveWindowLayout() const;
+    int currentLibraryDockWidth() const;
+    void restoreLibraryDockWidth(int width);
 };

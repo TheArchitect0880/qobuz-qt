@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QByteArray>
 #include <QSettings>
 
 class AppSettings
@@ -56,6 +57,22 @@ public:
 
     QString lastFmSessionKey() const { return m_settings.value("lastfm/session_key").toString(); }
     void    setLastFmSessionKey(const QString &v){ m_settings.setValue("lastfm/session_key", v); }
+
+    // --- UI layout ---
+    QByteArray windowGeometry() const { return m_settings.value("ui/window_geometry").toByteArray(); }
+    void setWindowGeometry(const QByteArray &geometry) { m_settings.setValue("ui/window_geometry", geometry); }
+
+    QByteArray windowState() const { return m_settings.value("ui/window_state").toByteArray(); }
+    void setWindowState(const QByteArray &state) { m_settings.setValue("ui/window_state", state); }
+
+    int libraryDockWidth() const { return m_settings.value("ui/library_dock_width", -1).toInt(); }
+    void setLibraryDockWidth(int width) { m_settings.setValue("ui/library_dock_width", width); }
+    void clearWindowLayout()
+    {
+        m_settings.remove("ui/window_geometry");
+        m_settings.remove("ui/window_state");
+        m_settings.remove("ui/library_dock_width");
+    }
 
 private:
     AppSettings() : m_settings("qobuz-qt", "qobuz-qt") {}
