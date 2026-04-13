@@ -2,6 +2,7 @@
 
 #include "../../backend/qobuzbackend.hpp"
 #include "../../playqueue.hpp"
+#include "../../util/albumqueuehelper.hpp"
 
 #include <QWidget>
 #include <QDockWidget>
@@ -20,6 +21,7 @@ namespace SidePanel
     public:
         explicit SearchTab(QobuzBackend *backend, PlayQueue *queue, QWidget *parent = nullptr);
 
+        void focusSearchBox();
         void setUserPlaylists(const QVector<QPair<qint64, QString>> &playlists);
 
     signals:
@@ -35,18 +37,24 @@ namespace SidePanel
         void onItemDoubleClicked(QTreeWidgetItem *item, int column);
 
     private:
-        QobuzBackend *m_backend    = nullptr;
-        PlayQueue    *m_queue      = nullptr;
-        QLineEdit    *m_searchBox  = nullptr;
-        QTabWidget   *m_resultTabs = nullptr;
-        QTreeWidget  *m_topResults = nullptr;
-        QTreeWidget  *m_trackResults  = nullptr;
-        QTreeWidget  *m_albumResults  = nullptr;
-        QTreeWidget  *m_artistResults = nullptr;
+        QobuzBackend     *m_backend    = nullptr;
+        PlayQueue        *m_queue      = nullptr;
+        AlbumQueueHelper *m_albumQueueHelper = nullptr;
+        QLineEdit        *m_searchBox  = nullptr;
+        QTabWidget       *m_resultTabs = nullptr;
+        QTreeWidget      *m_topResults = nullptr;
+        QTreeWidget      *m_trackResults  = nullptr;
+        QTreeWidget      *m_albumResults  = nullptr;
+        QTreeWidget      *m_artistResults = nullptr;
         QVector<QPair<qint64, QString>> m_userPlaylists;
 
+        void onTopResultContextMenu(const QPoint &pos);
         void onTrackContextMenu(const QPoint &pos);
         void onAlbumContextMenu(const QPoint &pos);
+        void onArtistContextMenu(const QPoint &pos);
+        void showTrackContextMenu(QTreeWidget *tree, const QPoint &pos);
+        void showAlbumContextMenu(QTreeWidget *tree, const QPoint &pos);
+        void showArtistContextMenu(QTreeWidget *tree, const QPoint &pos);
         void showTrackInfo(const QJsonObject &track);
     };
 
@@ -57,6 +65,7 @@ namespace SidePanel
         explicit View(QobuzBackend *backend, PlayQueue *queue, QWidget *parent = nullptr);
 
         SearchTab *searchTab() const { return m_search; }
+        void focusSearchBox() { m_search->focusSearchBox(); }
 
     signals:
         void albumSelected(const QString &albumId);

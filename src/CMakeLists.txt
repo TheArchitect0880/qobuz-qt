@@ -58,6 +58,7 @@ target_sources(qobuz-qt PRIVATE
     # Utils (header-only)
     util/icon.hpp
     util/settings.hpp
+    util/albumqueuehelper.hpp
 )
 
 if (USE_DBUS)

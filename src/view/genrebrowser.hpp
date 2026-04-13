@@ -2,6 +2,7 @@
 
 #include "../backend/qobuzbackend.hpp"
 #include "../playqueue.hpp"
+#include "../util/albumqueuehelper.hpp"
 #include "albumlistview.hpp"
 
 #include <QComboBox>
@@ -55,6 +56,7 @@ private slots:
 private:
     QobuzBackend *m_backend = nullptr;
     PlayQueue *m_queue = nullptr;
+    AlbumQueueHelper *m_albumQueueHelper = nullptr;
     QLabel *m_browseLabel = nullptr;
     QLabel *m_genreLabel = nullptr;
     QLabel *m_typeLabel = nullptr;

@@ -1,5 +1,6 @@
 #include "genrebrowser.hpp"
 #include "../util/colors.hpp"
+#include "../util/albumqueuehelper.hpp"
 
 #include <QAction>
 #include <QDialog>
@@ -23,6 +24,7 @@ GenreBrowserView::GenreBrowserView(QobuzBackend *backend, PlayQueue *queue, QWid
     , m_backend(backend)
     , m_queue(queue)
 {
+    m_albumQueueHelper = new AlbumQueueHelper(m_backend, m_queue, this);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -735,6 +737,19 @@ void GenreBrowserView::onAlbumContextMenu(const QPoint &pos)
         emit albumSelected(albumId);
     });
 
+    menu.addSeparator();
+    auto *albumNext = menu.addAction(
+        QIcon(":/res/icons/media-skip-forward.svg"), tr("Play album next"));
+    connect(albumNext, &QAction::triggered, this, [this, albumId] {
+        m_albumQueueHelper->request(albumId, AlbumQueueHelper::PlayNext);
+    });
+    auto *albumQueue = menu.addAction(
+        QIcon(":/res/icons/media-playlist-append.svg"), tr("Add album to queue"));
+    connect(albumQueue, &QAction::triggered, this, [this, albumId] {
+        m_albumQueueHelper->request(albumId, AlbumQueueHelper::AddToQueue);
+    });
+
+    menu.addSeparator();
     auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
     connect(addFav, &QAction::triggered, this, [this, albumId] {
         m_backend->addFavAlbum(albumId);

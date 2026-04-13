@@ -47,6 +47,7 @@ SearchTab::SearchTab(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
     m_topResults->header()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_topResults->header()->setSectionResizeMode(2, QHeaderView::Stretch);
     m_topResults->header()->setStretchLastSection(false);
+    m_topResults->setContextMenuPolicy(Qt::CustomContextMenu);
 
     m_trackResults  = new QTreeWidget(this);
     m_trackResults->setHeaderLabels({tr("Title"), tr("Artist"), tr("Album")});
@@ -65,6 +66,7 @@ SearchTab::SearchTab(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
     m_artistResults = new QTreeWidget(this);
     m_artistResults->setHeaderLabels({tr("Artist")});
     m_artistResults->setRootIsDecorated(false);
+    m_artistResults->setContextMenuPolicy(Qt::CustomContextMenu);
 
     m_resultTabs->addTab(m_topResults, tr("Top Results"));
     m_resultTabs->addTab(m_trackResults,  tr("Tracks"));
@@ -84,10 +86,22 @@ SearchTab::SearchTab(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
     connect(m_artistResults, &QTreeWidget::itemDoubleClicked, this, &SearchTab::onItemDoubleClicked);
 
     // Context menus
+    connect(m_topResults, &QTreeWidget::customContextMenuRequested,
+            this, &SearchTab::onTopResultContextMenu);
     connect(m_trackResults, &QTreeWidget::customContextMenuRequested,
             this, &SearchTab::onTrackContextMenu);
     connect(m_albumResults, &QTreeWidget::customContextMenuRequested,
             this, &SearchTab::onAlbumContextMenu);
+    connect(m_artistResults, &QTreeWidget::customContextMenuRequested,
+            this, &SearchTab::onArtistContextMenu);
+
+    m_albumQueueHelper = new AlbumQueueHelper(m_backend, m_queue, this);
+}
+
+void SearchTab::focusSearchBox()
+{
+    m_searchBox->setFocus();
+    m_searchBox->selectAll();
 }
 
 void SearchTab::setUserPlaylists(const QVector<QPair<qint64, QString>> &playlists)
@@ -230,9 +244,32 @@ void SearchTab::onItemDoubleClicked(QTreeWidgetItem *item, int)
     }
 }
 
+void SearchTab::onTopResultContextMenu(const QPoint &pos)
+{
+    auto *item = m_topResults->itemAt(pos);
+    if (!item) return;
+    const QString type = item->data(0, TypeRole).toString();
+    if (type == QStringLiteral("track"))
+        showTrackContextMenu(m_topResults, pos);
+    else if (type == QStringLiteral("album"))
+        showAlbumContextMenu(m_topResults, pos);
+    else if (type == QStringLiteral("artist"))
+        showArtistContextMenu(m_topResults, pos);
+}
+
 void SearchTab::onTrackContextMenu(const QPoint &pos)
 {
-    auto *item = m_trackResults->itemAt(pos);
+    showTrackContextMenu(m_trackResults, pos);
+}
+
+void SearchTab::onAlbumContextMenu(const QPoint &pos)
+{
+    showAlbumContextMenu(m_albumResults, pos);
+}
+
+void SearchTab::showTrackContextMenu(QTreeWidget *tree, const QPoint &pos)
+{
+    auto *item = tree->itemAt(pos);
     if (!item) return;
 
     const qint64 trackId = item->data(0, IdRole).toLongLong();
@@ -266,6 +303,16 @@ void SearchTab::onTrackContextMenu(const QPoint &pos)
             tr("Open album: %1").arg(QString(albumTitle).replace(QLatin1Char('&'), QStringLiteral("&&"))));
         connect(openAlbum, &QAction::triggered, this, [this, albumId] {
             emit albumSelected(albumId);
+        });
+        auto *albumNext = menu.addAction(
+            QIcon(":/res/icons/media-skip-forward.svg"), tr("Play album next"));
+        connect(albumNext, &QAction::triggered, this, [this, albumId] {
+            m_albumQueueHelper->request(albumId, AlbumQueueHelper::PlayNext);
+        });
+        auto *albumQueue = menu.addAction(
+            QIcon(":/res/icons/media-playlist-append.svg"), tr("Add album to queue"));
+        connect(albumQueue, &QAction::triggered, this, [this, albumId] {
+            m_albumQueueHelper->request(albumId, AlbumQueueHelper::AddToQueue);
         });
     }
     if (artistId > 0) {
@@ -306,12 +353,12 @@ void SearchTab::onTrackContextMenu(const QPoint &pos)
         showTrackInfo(trackJson);
     });
 
-    menu.exec(m_trackResults->viewport()->mapToGlobal(pos));
+    menu.exec(tree->viewport()->mapToGlobal(pos));
 }
 
-void SearchTab::onAlbumContextMenu(const QPoint &pos)
+void SearchTab::showAlbumContextMenu(QTreeWidget *tree, const QPoint &pos)
 {
-    auto *item = m_albumResults->itemAt(pos);
+    auto *item = tree->itemAt(pos);
     if (!item) return;
 
     const QString albumId = item->data(1, IdRole).toString();
@@ -320,8 +367,12 @@ void SearchTab::onAlbumContextMenu(const QPoint &pos)
 
     QMenu menu(this);
 
-    auto *openAlbum = menu.addAction(QIcon(":/res/icons/view-media-album-cover.svg"), tr("Open album"));
-    auto *addFav    = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+    auto *openAlbum   = menu.addAction(QIcon(":/res/icons/view-media-album-cover.svg"), tr("Open album"));
+    menu.addSeparator();
+    auto *playNextAct = menu.addAction(QIcon(":/res/icons/media-skip-forward.svg"),   tr("Play album next"));
+    auto *addQueueAct = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add album to queue"));
+    menu.addSeparator();
+    auto *addFav      = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
 
     const qint64 artistId = static_cast<qint64>(
         albumJson["artist"].toObject()["id"].toDouble());
@@ -339,11 +390,50 @@ void SearchTab::onAlbumContextMenu(const QPoint &pos)
     connect(openAlbum, &QAction::triggered, this, [this, albumId] {
         emit albumSelected(albumId);
     });
+    connect(playNextAct, &QAction::triggered, this, [this, albumId] {
+        m_albumQueueHelper->request(albumId, AlbumQueueHelper::PlayNext);
+    });
+    connect(addQueueAct, &QAction::triggered, this, [this, albumId] {
+        m_albumQueueHelper->request(albumId, AlbumQueueHelper::AddToQueue);
+    });
     connect(addFav, &QAction::triggered, this, [this, albumId] {
         m_backend->addFavAlbum(albumId);
     });
 
-    menu.exec(m_albumResults->viewport()->mapToGlobal(pos));
+    menu.exec(tree->viewport()->mapToGlobal(pos));
+}
+
+void SearchTab::onArtistContextMenu(const QPoint &pos)
+{
+    showArtistContextMenu(m_artistResults, pos);
+}
+
+void SearchTab::showArtistContextMenu(QTreeWidget *tree, const QPoint &pos)
+{
+    auto *item = tree->itemAt(pos);
+    if (!item) return;
+
+    const qint64 artistId = item->data(0, IdRole).toLongLong();
+    if (artistId <= 0) return;
+
+    const QString artistName = item->text(1).isEmpty() ? item->text(0) : item->text(1);
+
+    QMenu menu(this);
+
+    auto *openArtist = menu.addAction(
+        QIcon(":/res/icons/view-media-artist.svg"),
+        tr("Open artist: %1").arg(QString(artistName).replace(QLatin1Char('&'), QStringLiteral("&&"))));
+    connect(openArtist, &QAction::triggered, this, [this, artistId] {
+        emit artistSelected(artistId);
+    });
+
+    menu.addSeparator();
+    auto *addFav = menu.addAction(QIcon(":/res/icons/starred-symbolic.svg"), tr("Add to favorites"));
+    connect(addFav, &QAction::triggered, this, [this, artistId] {
+        m_backend->addFavArtist(artistId);
+    });
+
+    menu.exec(tree->viewport()->mapToGlobal(pos));
 }
 
 void SearchTab::showTrackInfo(const QJsonObject &track)
@@ -357,7 +447,8 @@ View::View(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
     : QDockWidget(tr("Search"), parent)
 {
     setObjectName(QStringLiteral("searchPanel"));
-    setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
+    setMinimumWidth(220);
 
     m_search = new SearchTab(backend, queue, this);
     setWidget(m_search);

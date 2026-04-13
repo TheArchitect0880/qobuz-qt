@@ -3,6 +3,7 @@
 #include "../model/tracklistmodel.hpp"
 #include "../backend/qobuzbackend.hpp"
 #include "../playqueue.hpp"
+#include "../util/albumqueuehelper.hpp"
 
 #include <QTreeView>
 #include <QJsonArray>
@@ -52,9 +53,10 @@ namespace List
         void removeFromPlaylistRequested(qint64 playlistId, qint64 playlistTrackId);
 
     private:
-        TrackListModel *m_model   = nullptr;
-        QobuzBackend   *m_backend = nullptr;
-        PlayQueue      *m_queue   = nullptr;
+        TrackListModel   *m_model   = nullptr;
+        QobuzBackend     *m_backend = nullptr;
+        PlayQueue        *m_queue   = nullptr;
+        AlbumQueueHelper *m_albumQueueHelper = nullptr;
         qint64          m_playlistId = 0;
         int             m_playlistTrackTotal = 0;
         int             m_playlistLoadedCount = 0;

@@ -1,6 +1,7 @@
 #include "tracks.hpp"
 #include "../util/settings.hpp"
 #include "../util/trackinfo.hpp"
+#include "../util/albumqueuehelper.hpp"
 
 #include <QHeaderView>
 #include <QMenu>
@@ -16,6 +17,7 @@ Tracks::Tracks(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
     , m_queue(queue)
 {
     m_model = new TrackListModel(this);
+    m_albumQueueHelper = new AlbumQueueHelper(m_backend, m_queue, this);
     setModel(m_model);
 
     setRootIsDecorated(false);
@@ -265,11 +267,26 @@ void Tracks::onContextMenu(const QPoint &pos)
     if (id <= 0) return;  // disc header row
     const QJsonObject trackJson = m_model->data(index, TrackListModel::TrackJsonRole).toJsonObject();
 
+    // Collect selected tracks for multi-select actions
+    QList<QJsonObject> selectedTracks;
+    const QModelIndexList selected = selectionModel()->selectedRows();
+    for (const QModelIndex &sel : selected) {
+        const qint64 selId = m_model->data(sel, TrackListModel::TrackIdRole).toLongLong();
+        if (selId <= 0) continue;
+        selectedTracks.append(m_model->data(sel, TrackListModel::TrackJsonRole).toJsonObject());
+    }
+    if (selectedTracks.isEmpty())
+        selectedTracks.append(trackJson);
+
+    const int selCount = selectedTracks.size();
+
     QMenu menu(this);
 
     auto *playNow  = menu.addAction(QIcon(":/res/icons/media-playback-start.svg"), tr("Play now"));
-    auto *playNext = menu.addAction(QIcon(":/res/icons/media-skip-forward.svg"),   tr("Play next"));
-    auto *addQueue = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"), tr("Add to queue"));
+    auto *playNext = menu.addAction(QIcon(":/res/icons/media-skip-forward.svg"),
+        selCount > 1 ? tr("Play next (%1 tracks)").arg(selCount) : tr("Play next"));
+    auto *addQueue = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"),
+        selCount > 1 ? tr("Add to queue (%1 tracks)").arg(selCount) : tr("Add to queue"));
     menu.addSeparator();
 
     const bool isFav = m_model->isFav(id);
@@ -295,14 +312,16 @@ void Tracks::onContextMenu(const QPoint &pos)
         m_queue->setContext(m_model->currentTracksJson(), filteredRow);
         emit playTrackRequested(id);
     });
-    connect(playNext, &QAction::triggered, this, [this, trackJson] {
-        m_queue->playNext(trackJson);
+    connect(playNext, &QAction::triggered, this, [this, selectedTracks] {
+        for (int i = selectedTracks.size() - 1; i >= 0; --i)
+            m_queue->playNext(selectedTracks[i]);
     });
-    connect(addQueue, &QAction::triggered, this, [this, trackJson] {
-        m_queue->addToQueue(trackJson);
+    connect(addQueue, &QAction::triggered, this, [this, selectedTracks] {
+        for (const auto &t : selectedTracks)
+            m_queue->addToQueue(t);
     });
 
-    // Open album
+    // Open album / queue album
     const QString albumId = m_model->trackAt(index.row()).albumId;
     if (!albumId.isEmpty()) {
         menu.addSeparator();
@@ -311,6 +330,16 @@ void Tracks::onContextMenu(const QPoint &pos)
             tr("Open album: %1").arg(QString(m_model->trackAt(index.row()).album).replace(QLatin1Char('&'), QStringLiteral("&&"))));
         connect(openAlbum, &QAction::triggered, this, [this, albumId] {
             m_backend->getAlbum(albumId);
+        });
+        auto *albumNext = menu.addAction(
+            QIcon(":/res/icons/media-skip-forward.svg"), tr("Play album next"));
+        connect(albumNext, &QAction::triggered, this, [this, albumId] {
+            m_albumQueueHelper->request(albumId, AlbumQueueHelper::PlayNext);
+        });
+        auto *albumQueue = menu.addAction(
+            QIcon(":/res/icons/media-playlist-append.svg"), tr("Add album to queue"));
+        connect(albumQueue, &QAction::triggered, this, [this, albumId] {
+            m_albumQueueHelper->request(albumId, AlbumQueueHelper::AddToQueue);
         });
     }
 
