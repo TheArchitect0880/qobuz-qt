@@ -362,6 +362,35 @@ impl QobuzClient {
         Ok(url_dto)
     }
 
+    pub async fn get_track_download_url(
+        &self,
+        track_id: i64,
+        format: Format,
+    ) -> Result<TrackFileUrlDto> {
+        let ts = Self::ts();
+        let mut sign_params: Vec<(&str, String)> = vec![
+            ("format_id", format.id().to_string()),
+            ("intent", "stream".to_string()),
+            ("track_id", track_id.to_string()),
+        ];
+        let sig = self.request_sig("track/getFileUrl", &mut sign_params, ts);
+
+        let resp = self
+            .get_request("track/getFileUrl")
+            .query(&[
+                ("track_id", track_id.to_string()),
+                ("format_id", format.id().to_string()),
+                ("intent", "stream".to_string()),
+                ("request_ts", ts.to_string()),
+                ("request_sig", sig),
+            ])
+            .send()
+            .await?;
+
+        let body = Self::check_response(resp).await?;
+        Ok(serde_json::from_value(body)?)
+    }
+
     // --- Album ---
 
     pub async fn get_album(&self, album_id: &str) -> Result<AlbumDto> {

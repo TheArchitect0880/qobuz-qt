@@ -1,8 +1,33 @@
 #include "qobuzbackend.hpp"
 
+#include "../util/settings.hpp"
+
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QMetaObject>
+
+namespace
+{
+QByteArray buildDownloadSettingsJson()
+{
+    const AppSettings &settings = AppSettings::instance();
+    const QJsonObject obj{
+        {QStringLiteral("folder"), settings.downloadFolder()},
+        {QStringLiteral("source_subdirectories"), settings.downloadSourceSubdirectories()},
+        {QStringLiteral("disc_subdirectories"), settings.downloadDiscSubdirectories()},
+        {QStringLiteral("add_singles_to_folder"), settings.downloadAddSinglesToFolder()},
+        {QStringLiteral("renumber_playlist_tracks"), settings.downloadRenumberPlaylistTracks()},
+        {QStringLiteral("set_playlist_to_album"), settings.downloadSetPlaylistToAlbum()},
+        {QStringLiteral("restrict_characters"), settings.downloadRestrictCharacters()},
+        {QStringLiteral("truncate_to"), settings.downloadTruncateTo()},
+        {QStringLiteral("folder_format"), settings.downloadFolderFormat()},
+        {QStringLiteral("track_format"), settings.downloadTrackFormat()},
+        {QStringLiteral("save_artwork"), settings.downloadSaveArtwork()},
+        {QStringLiteral("embed_artwork"), settings.downloadEmbedArtwork()},
+    };
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact);
+}
+}
 
 QobuzBackend::QobuzBackend(QObject *parent)
     : QObject(parent)
@@ -233,6 +258,34 @@ void QobuzBackend::removeFavArtist(qint64 artistId)
     qobuz_backend_remove_fav_artist(m_backend, artistId);
 }
 
+void QobuzBackend::downloadTrack(qint64 trackId, int formatId)
+{
+    const QByteArray json = buildDownloadSettingsJson();
+    qobuz_backend_download_track(m_backend, trackId, formatId, json.constData());
+}
+
+void QobuzBackend::downloadAlbum(const QString &albumId, int formatId)
+{
+    const QByteArray json = buildDownloadSettingsJson();
+    qobuz_backend_download_album(m_backend, albumId.toUtf8().constData(), formatId, json.constData());
+}
+
+void QobuzBackend::downloadPlaylist(qint64 playlistId, int formatId)
+{
+    const QByteArray json = buildDownloadSettingsJson();
+    qobuz_backend_download_playlist(m_backend, playlistId, formatId, json.constData());
+}
+
+void QobuzBackend::cancelDownload(quint64 transferId)
+{
+    qobuz_backend_cancel_download(m_backend, transferId);
+}
+
+void QobuzBackend::cancelAllDownloads()
+{
+    qobuz_backend_cancel_all_downloads(m_backend);
+}
+
 // ---- playback ----
 
 void QobuzBackend::playTrack(qint64 trackId, int formatId)
@@ -390,6 +443,21 @@ void QobuzBackend::onEvent(int eventType, const QString &json)
         break;
     case EV_USER_OK:
         emit userLoaded(obj);
+        break;
+    case EV_DOWNLOAD_STARTED:
+        emit downloadStarted(obj);
+        break;
+    case EV_DOWNLOAD_PROGRESS:
+        emit downloadProgress(obj);
+        break;
+    case EV_DOWNLOAD_FINISHED:
+        emit downloadFinished(obj);
+        break;
+    case EV_DOWNLOAD_FAILED:
+        emit downloadFailed(obj);
+        break;
+    case EV_DOWNLOAD_CANCELLED:
+        emit downloadCancelled(obj);
         break;
     case EV_GENERIC_ERR:
     case EV_TRACK_URL_ERR:

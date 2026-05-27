@@ -4,6 +4,7 @@
 #include "playqueue.hpp"
 #include "view/maintoolbar.hpp"
 #include "view/maincontent.hpp"
+#include "view/transferspanel.hpp"
 #include "view/context/view.hpp"
 #include "view/queuepanel.hpp"
 #include "view/sidepanel/view.hpp"
@@ -52,6 +53,10 @@ private slots:
     void onSearchToggled(bool visible);
     void onPlaylistCreated(const QJsonObject &playlist);
     void onUserPlaylistsChanged(const QVector<QPair<qint64, QString>> &playlists);
+    void onDownloadStarted(const QJsonObject &info);
+    void onDownloadProgress(const QJsonObject &info);
+    void onDownloadFinished(const QJsonObject &info);
+    void onDownloadFailed(const QJsonObject &info);
     void resetLayout();
 
     void showLoginDialog();
@@ -73,6 +78,7 @@ private:
     List::Library   *m_library     = nullptr;
     Context::View   *m_contextView = nullptr;
     QueuePanel      *m_queuePanel  = nullptr;
+    TransfersPanel  *m_transfersPanel = nullptr;
     SidePanel::View *m_sidePanel   = nullptr;
     QDockWidget     *m_libraryDock = nullptr;
     LastFmScrobbler *m_scrobbler   = nullptr;

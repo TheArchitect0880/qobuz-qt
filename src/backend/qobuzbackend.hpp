@@ -69,6 +69,13 @@ public:
     void addFavArtist(qint64 artistId);
     void removeFavArtist(qint64 artistId);
 
+    // --- downloads ---
+    void downloadTrack(qint64 trackId, int formatId = 7);
+    void downloadAlbum(const QString &albumId, int formatId = 7);
+    void downloadPlaylist(qint64 playlistId, int formatId = 7);
+    void cancelDownload(quint64 transferId);
+    void cancelAllDownloads();
+
     // --- playback ---
     void playTrack(qint64 trackId, int formatId = 6);
     void pause();
@@ -124,6 +131,11 @@ signals:
 
     // errors
     void error(const QString &message);
+    void downloadStarted(const QJsonObject &info);
+    void downloadProgress(const QJsonObject &info);
+    void downloadFinished(const QJsonObject &info);
+    void downloadFailed(const QJsonObject &info);
+    void downloadCancelled(const QJsonObject &info);
 
 private slots:
     Q_INVOKABLE void onEvent(int eventType, const QString &json);

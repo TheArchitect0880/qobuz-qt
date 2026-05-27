@@ -29,6 +29,7 @@ public:
     void updateProgress(quint64 position, quint64 duration);
     void setQueueToggleChecked(bool checked);
     void setSearchToggleChecked(bool checked);
+    void setTransfersToggleChecked(bool checked);
 
     void setUserPlaylists(const QVector<QPair<qint64, QString>> &playlists) { m_userPlaylists = playlists; }
     void setFavTrackIds(const QSet<qint64> &ids) { m_favTrackIds = ids; }
@@ -38,6 +39,7 @@ public:
 signals:
     void searchToggled(bool visible);
     void queueToggled(bool visible);
+    void transfersToggled(bool visible);
     void albumRequested(const QString &albumId);
     void artistRequested(qint64 artistId);
     void addToPlaylistRequested(qint64 trackId, qint64 playlistId);
@@ -93,6 +95,7 @@ private:
     VolumeButton    *m_volume      = nullptr;
     QAction         *m_queueBtn    = nullptr;
     QAction         *m_search      = nullptr;
+    QAction         *m_transfers   = nullptr;
 
     QNetworkAccessManager *m_nam = nullptr;
     AlbumQueueHelper      *m_albumQueueHelper = nullptr;

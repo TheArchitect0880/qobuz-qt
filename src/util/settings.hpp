@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QByteArray>
+#include <QDir>
 #include <QSettings>
 
 class AppSettings
@@ -44,6 +45,60 @@ public:
 
     bool autoplayEnabled() const       { return m_settings.value("playback/autoplay", false).toBool(); }
     void setAutoplayEnabled(bool v)    { m_settings.setValue("playback/autoplay", v); }
+
+    QString downloadFolder() const
+    {
+        return m_settings.value("downloads/folder", QDir::homePath() + QStringLiteral("/StreamripDownloads")).toString();
+    }
+    void setDownloadFolder(const QString &path) { m_settings.setValue("downloads/folder", path); }
+
+    int downloadFormat() const         { return m_settings.value("downloads/format", 7).toInt(); }
+    void setDownloadFormat(int f)      { m_settings.setValue("downloads/format", f); }
+
+    bool downloadSourceSubdirectories() const { return m_settings.value("downloads/source_subdirectories", false).toBool(); }
+    void setDownloadSourceSubdirectories(bool v) { m_settings.setValue("downloads/source_subdirectories", v); }
+
+    bool downloadDiscSubdirectories() const { return m_settings.value("downloads/disc_subdirectories", true).toBool(); }
+    void setDownloadDiscSubdirectories(bool v) { m_settings.setValue("downloads/disc_subdirectories", v); }
+
+    bool downloadAddSinglesToFolder() const { return m_settings.value("downloads/add_singles_to_folder", false).toBool(); }
+    void setDownloadAddSinglesToFolder(bool v) { m_settings.setValue("downloads/add_singles_to_folder", v); }
+
+    bool downloadRenumberPlaylistTracks() const { return m_settings.value("downloads/renumber_playlist_tracks", true).toBool(); }
+    void setDownloadRenumberPlaylistTracks(bool v) { m_settings.setValue("downloads/renumber_playlist_tracks", v); }
+
+    bool downloadSetPlaylistToAlbum() const { return m_settings.value("downloads/set_playlist_to_album", true).toBool(); }
+    void setDownloadSetPlaylistToAlbum(bool v) { m_settings.setValue("downloads/set_playlist_to_album", v); }
+
+    bool downloadRestrictCharacters() const { return m_settings.value("downloads/restrict_characters", false).toBool(); }
+    void setDownloadRestrictCharacters(bool v) { m_settings.setValue("downloads/restrict_characters", v); }
+
+    int downloadTruncateTo() const     { return m_settings.value("downloads/truncate_to", 120).toInt(); }
+    void setDownloadTruncateTo(int v)  { m_settings.setValue("downloads/truncate_to", v); }
+
+    QString downloadFolderFormat() const
+    {
+        return m_settings.value(
+            "downloads/folder_format",
+            QStringLiteral("{albumartist} - {title} ({year}) [{container}] [{bit_depth}B-{sampling_rate}kHz]"))
+            .toString();
+    }
+    void setDownloadFolderFormat(const QString &v) { m_settings.setValue("downloads/folder_format", v); }
+
+    QString downloadTrackFormat() const
+    {
+        return m_settings.value(
+            "downloads/track_format",
+            QStringLiteral("{tracknumber:02}. {artist} - {title}{explicit}"))
+            .toString();
+    }
+    void setDownloadTrackFormat(const QString &v) { m_settings.setValue("downloads/track_format", v); }
+
+    bool downloadSaveArtwork() const { return m_settings.value("downloads/save_artwork", true).toBool(); }
+    void setDownloadSaveArtwork(bool v) { m_settings.setValue("downloads/save_artwork", v); }
+
+    bool downloadEmbedArtwork() const { return m_settings.value("downloads/embed_artwork", true).toBool(); }
+    void setDownloadEmbedArtwork(bool v) { m_settings.setValue("downloads/embed_artwork", v); }
 
     // --- Last.fm ---
     bool    lastFmEnabled()   const  { return m_settings.value("lastfm/enabled", false).toBool(); }

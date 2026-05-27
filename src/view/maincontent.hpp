@@ -49,6 +49,8 @@ signals:
     void albumFavoriteToggled(const QString &albumId, bool favorite);
     void playlistRequested(qint64 playlistId);
     void playlistFollowToggled(qint64 playlistId, bool follow);
+    void downloadAlbumRequested(const QString &albumId);
+    void downloadPlaylistRequested(qint64 playlistId);
     void playTrackRequested(qint64 trackId);
 
 private:

@@ -115,6 +115,13 @@ public:
         m_followBtn->hide();
         btnRow->addWidget(m_followBtn);
 
+        m_downloadBtn = new QPushButton(tr("Download"), info);
+        m_downloadBtn->setStyleSheet(btnBase +
+            QStringLiteral("QPushButton { background: #2a2a2a; color: #ddd; border: 1px solid #666; }"
+                           "QPushButton:pressed { background: #333; }"));
+        m_downloadBtn->hide();
+        btnRow->addWidget(m_downloadBtn);
+
         btnRow->addStretch();
         vlay->addLayout(btnRow);
         vlay->addStretch(1);
@@ -137,6 +144,7 @@ public:
     QPushButton *shuffleButton() { return m_shuffleBtn; }
     QPushButton *favButton()     { return m_favBtn; }
     QPushButton *followButton()  { return m_followBtn; }
+    QPushButton *downloadButton() { return m_downloadBtn; }
 
     QPushButton *subtitleButton() { return m_subtitle; }
     QString albumId() const      { return m_albumId; }
@@ -163,6 +171,9 @@ public:
         setAlbumFaved(isFaved);
         m_favBtn->setEnabled(!m_albumId.isEmpty());
         m_favBtn->show();
+        m_downloadBtn->setText(tr("Download Album"));
+        m_downloadBtn->setEnabled(!m_albumId.isEmpty());
+        m_downloadBtn->show();
 
         m_followBtn->hide();
         m_playlistId = 0;
@@ -210,6 +221,10 @@ public:
             fetchUrl(best.first().toString());
         else
             m_art->setPixmap(QPixmap());
+
+        m_downloadBtn->setText(tr("Download Playlist"));
+        m_downloadBtn->setEnabled(m_playlistId > 0);
+        m_downloadBtn->show();
 
         show();
     }
@@ -306,6 +321,7 @@ private:
     QPushButton           *m_shuffleBtn = nullptr;
     QPushButton           *m_favBtn     = nullptr;
     QPushButton           *m_followBtn  = nullptr;
+    QPushButton           *m_downloadBtn = nullptr;
     QNetworkAccessManager *m_nam        = nullptr;
     QString                m_currentArtUrl;
     QString                m_albumId;

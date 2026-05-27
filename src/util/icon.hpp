@@ -41,6 +41,7 @@ namespace Icon
     inline QIcon playlist()   { return get("view-media-playlist"); }
     inline QIcon track()      { return get("view-media-track"); }
     inline QIcon queue()      { return get("media-playlist-append"); }
+    inline QIcon transfers()  { return get("download"); }
     inline QIcon refresh()    { return get("view-refresh"); }
     inline QIcon settings()   { return get("configure"); }
     inline QIcon sortAsc()    { return get("view-sort-ascending"); }

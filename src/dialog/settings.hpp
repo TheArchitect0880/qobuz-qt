@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QNetworkAccessManager>
+#include <QSpinBox>
 
 class SettingsDialog : public QDialog
 {
@@ -20,6 +21,19 @@ private:
     QComboBox *m_formatBox      = nullptr;
     QCheckBox *m_replayGain     = nullptr;
     QCheckBox *m_gapless        = nullptr;
+
+    // Downloads
+    QLineEdit *m_downloadFolder = nullptr;
+    QComboBox *m_downloadFormatBox = nullptr;
+    QCheckBox *m_sourceSubdirs = nullptr;
+    QCheckBox *m_discSubdirs = nullptr;
+    QCheckBox *m_singlesToFolder = nullptr;
+    QCheckBox *m_renumberPlaylistTracks = nullptr;
+    QCheckBox *m_setPlaylistToAlbum = nullptr;
+    QCheckBox *m_restrictCharacters = nullptr;
+    QCheckBox *m_saveArtwork = nullptr;
+    QCheckBox *m_embedArtwork = nullptr;
+    QSpinBox  *m_truncateTo = nullptr;
 
     // Last.fm
     QCheckBox  *m_lastFmEnabled    = nullptr;
