@@ -24,6 +24,8 @@ public:
     // --- auth ---
     void login(const QString &email, const QString &password);
     void setToken(const QString &token);
+    void restoreSession(const QString &token, const QString &refreshToken, qint64 expiresAt);
+    void refreshAuth();
     void getUser();
 
     // --- catalog ---
@@ -92,7 +94,8 @@ public:
 
 signals:
     // auth
-    void loginSuccess(const QString &token, const QJsonObject &user);
+    void loginSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt, const QJsonObject &user);
+    void authRefreshSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt);
     void loginError(const QString &error);
     void userLoaded(const QJsonObject &user);
 

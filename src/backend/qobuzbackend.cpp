@@ -64,6 +64,20 @@ void QobuzBackend::setToken(const QString &token)
     qobuz_backend_set_token(m_backend, token.toUtf8().constData());
 }
 
+void QobuzBackend::restoreSession(const QString &token, const QString &refreshToken, qint64 expiresAt)
+{
+    qobuz_backend_restore_session(
+        m_backend,
+        token.toUtf8().constData(),
+        refreshToken.toUtf8().constData(),
+        static_cast<quint64>(qMax<qint64>(0, expiresAt)));
+}
+
+void QobuzBackend::refreshAuth()
+{
+    qobuz_backend_refresh_auth(m_backend);
+}
+
 void QobuzBackend::getUser()
 {
     qobuz_backend_get_user(m_backend);
@@ -347,10 +361,20 @@ void QobuzBackend::onEvent(int eventType, const QString &json)
 
     switch (eventType) {
     case EV_LOGIN_OK:
-        emit loginSuccess(obj["token"].toString(), obj["user"].toObject());
+        emit loginSuccess(
+            obj["token"].toString(),
+            obj["refresh_token"].toString(),
+            static_cast<qint64>(obj["expires_at"].toDouble()),
+            obj["user"].toObject());
         break;
     case EV_LOGIN_ERR:
         emit loginError(obj["error"].toString());
+        break;
+    case EV_AUTH_REFRESH_OK:
+        emit authRefreshSuccess(
+            obj["token"].toString(),
+            obj["refresh_token"].toString(),
+            static_cast<qint64>(obj["expires_at"].toDouble()));
         break;
     case EV_SEARCH_OK:
         emit searchResult(obj);

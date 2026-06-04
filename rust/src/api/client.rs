@@ -19,6 +19,8 @@ pub const DEFAULT_APP_SECRET: &str = "e79f8b9be485692b0e5f9dd895826368";
 pub struct QobuzClient {
     http: Client,
     pub auth_token: Option<String>,
+    refresh_token: Option<String>,
+    auth_expires_at: Option<u64>,
     /// Playback session ID from POST /session/start — sent as X-Session-Id for /file/url.
     session_id: Option<String>,
     session_expires_at: Option<u64>,
@@ -112,6 +114,8 @@ impl QobuzClient {
         Ok(Self {
             http,
             auth_token: None,
+            refresh_token: None,
+            auth_expires_at: None,
             session_id: None,
             session_expires_at: None,
             session_infos: None,
@@ -122,6 +126,28 @@ impl QobuzClient {
 
     pub fn set_auth_token(&mut self, token: String) {
         self.auth_token = Some(token);
+    }
+
+    pub fn set_auth_state(
+        &mut self,
+        access_token: Option<String>,
+        refresh_token: Option<String>,
+        auth_expires_at: Option<u64>,
+    ) {
+        self.auth_token = access_token;
+        self.refresh_token = refresh_token;
+        self.auth_expires_at = auth_expires_at.filter(|ts| *ts > 0);
+        self.session_id = None;
+        self.session_expires_at = None;
+        self.session_infos = None;
+    }
+
+    pub fn auth_state(&self) -> (Option<String>, Option<String>, Option<u64>) {
+        (
+            self.auth_token.clone(),
+            self.refresh_token.clone(),
+            self.auth_expires_at,
+        )
     }
 
     fn ts() -> u64 {
@@ -147,6 +173,10 @@ impl QobuzClient {
 
     fn url(&self, method: &str) -> String {
         format!("{}{}", BASE_URL, method)
+    }
+
+    fn auth_expires_at_from_oauth(oauth: &OAuthDto) -> Option<u64> {
+        oauth.expires_in.map(|expires_in| Self::ts() + expires_in.max(0) as u64)
     }
 
     async fn check_response(resp: reqwest::Response) -> Result<Value> {
@@ -220,6 +250,35 @@ impl QobuzClient {
         self.extract_and_store_token(serde_json::from_value(body)?)
     }
 
+    pub async fn refresh_oauth_token(&mut self) -> Result<OAuthDto> {
+        let refresh_token = self
+            .refresh_token
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no refresh token available"))?;
+
+        let resp = self
+            .http
+            .post(self.url("oauth2/token"))
+            .query(&[("app_id", self.app_id.as_str())])
+            .form(&[
+                ("client_id", self.app_id.as_str()),
+                ("client_secret", self.app_secret.as_str()),
+                ("refresh_token", refresh_token.as_str()),
+                ("grant_type", "refresh_token"),
+            ])
+            .send()
+            .await?;
+
+        let oauth: OAuthDto = serde_json::from_value(Self::check_response(resp).await?)?;
+        self.auth_token = oauth.access_token.clone();
+        self.refresh_token = oauth.refresh_token.clone().or(Some(refresh_token));
+        self.auth_expires_at = Self::auth_expires_at_from_oauth(&oauth);
+        self.session_id = None;
+        self.session_expires_at = None;
+        self.session_infos = None;
+        Ok(oauth)
+    }
+
     fn extract_and_store_token(&mut self, login: OAuthLoginResponse) -> Result<OAuthLoginResponse> {
         // auth_token = OAuth2 bearer (preferred) or legacy session token
         if let Some(token) = login
@@ -230,6 +289,14 @@ impl QobuzClient {
         {
             self.auth_token = Some(token);
         }
+        self.refresh_token = login
+            .oauth2
+            .as_ref()
+            .and_then(|o| o.refresh_token.clone());
+        self.auth_expires_at = login
+            .oauth2
+            .as_ref()
+            .and_then(Self::auth_expires_at_from_oauth);
         // Reset any cached playback session — it belongs to a different auth context.
         self.session_id = None;
         self.session_expires_at = None;

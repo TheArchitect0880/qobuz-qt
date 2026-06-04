@@ -36,7 +36,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
-    void onLoginSuccess(const QString &token, const QJsonObject &user);
+    void onLoginSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt, const QJsonObject &user);
     void onLoginError(const QString &error);
 
     void onFavTracksLoaded(const QJsonObject &result);
@@ -73,6 +73,7 @@ private:
     bool m_showFavTracksOnLoad = false;
     bool m_showFavAlbumsOnLoad = false;
     bool m_showFavArtistsOnLoad = false;
+    bool m_restoringSessionRefresh = false;
     MainToolBar     *m_toolBar     = nullptr;
     MainContent     *m_content     = nullptr;
     List::Library   *m_library     = nullptr;
@@ -95,6 +96,7 @@ private:
     void connectContentSignals();
     void connectToolbarSignals();
     void tryRestoreSession();
+    void continueRestoredSession();
     void restoreWindowLayout();
     void saveWindowLayout() const;
     int currentLibraryDockWidth() const;

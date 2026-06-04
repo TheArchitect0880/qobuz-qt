@@ -51,6 +51,7 @@ pub const EV_POSITION: c_int = 16;
 pub const EV_TRACK_URL_OK: c_int = 17;
 pub const EV_TRACK_URL_ERR: c_int = 18;
 pub const EV_GENERIC_ERR: c_int = 19;
+pub const EV_AUTH_REFRESH_OK: c_int = 40;
 pub const EV_ARTIST_RELEASES_OK: c_int = 24;
 pub const EV_DEEP_SHUFFLE_OK: c_int = 25;
 pub const EV_MOST_POPULAR_OK: c_int = 26;
@@ -107,6 +108,15 @@ fn call_cb(cb: EventCallback, ud: SendPtr, ev: c_int, json: &str) {
 
 fn err_json(msg: &str) -> String {
     serde_json::json!({ "error": msg }).to_string()
+}
+
+fn auth_json(token: &str, refresh_token: &str, expires_at: u64) -> String {
+    serde_json::json!({
+        "token": token,
+        "refresh_token": refresh_token,
+        "expires_at": expires_at,
+    })
+    .to_string()
 }
 
 fn parse_download_settings(json: &str) -> DownloadSettings {
@@ -338,6 +348,24 @@ pub unsafe extern "C" fn qobuz_backend_login(
                     .or(resp.user_auth_token.as_deref())
                     .unwrap_or("")
                     .to_string();
+                let refresh_token = resp
+                    .oauth2
+                    .as_ref()
+                    .and_then(|o| o.refresh_token.as_deref())
+                    .unwrap_or("")
+                    .to_string();
+                let expires_at = resp
+                    .oauth2
+                    .as_ref()
+                    .and_then(|o| o.expires_in)
+                    .map(|expires_in| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs()
+                            + expires_in.max(0) as u64
+                    })
+                    .unwrap_or(0);
                 let user_val = resp
                     .user
                     .as_ref()
@@ -345,7 +373,13 @@ pub unsafe extern "C" fn qobuz_backend_login(
                     .unwrap_or_default();
                 (
                     EV_LOGIN_OK,
-                    serde_json::json!({"token": token, "user": user_val}).to_string(),
+                    serde_json::json!({
+                        "token": token,
+                        "refresh_token": refresh_token,
+                        "expires_at": expires_at,
+                        "user": user_val,
+                    })
+                    .to_string(),
                 )
             }
             Err(e) => (EV_LOGIN_ERR, err_json(&e.to_string())),
@@ -359,6 +393,50 @@ pub unsafe extern "C" fn qobuz_backend_set_token(ptr: *mut Backend, token: *cons
     let inner = &(*ptr).0;
     let token = CStr::from_ptr(token).to_string_lossy().into_owned();
     inner.client.blocking_lock().set_auth_token(token);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_restore_session(
+    ptr: *mut Backend,
+    token: *const c_char,
+    refresh_token: *const c_char,
+    expires_at: u64,
+) {
+    let inner = &(*ptr).0;
+    let token = CStr::from_ptr(token).to_string_lossy().into_owned();
+    let refresh_token = CStr::from_ptr(refresh_token).to_string_lossy().into_owned();
+    inner.client.blocking_lock().set_auth_state(
+        (!token.is_empty()).then_some(token),
+        (!refresh_token.is_empty()).then_some(refresh_token),
+        (expires_at > 0).then_some(expires_at),
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_refresh_auth(ptr: *mut Backend) {
+    let inner = &(*ptr).0;
+    let client = inner.client.clone();
+    let cb = inner.cb;
+    let ud = inner.ud;
+
+    spawn(inner, async move {
+        let result = {
+            let mut client = client.lock().await;
+            client.refresh_oauth_token().await.map(|_| client.auth_state())
+        };
+        let (ev, json) = match result {
+            Ok((token, refresh_token, expires_at)) => (
+                EV_AUTH_REFRESH_OK,
+                auth_json(
+                    token.as_deref().unwrap_or(""),
+                    refresh_token.as_deref().unwrap_or(""),
+                    expires_at.unwrap_or(0),
+                ),
+            ),
+            Err(e) => (EV_GENERIC_ERR, err_json(&e.to_string())),
+        };
+        call_cb(cb, ud, ev, &json);
+    });
 }
 
 // ---------- Search ----------

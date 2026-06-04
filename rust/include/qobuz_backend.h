@@ -51,6 +51,7 @@ enum QobuzEvent {
     EV_DOWNLOAD_FINISHED     = 37,
     EV_DOWNLOAD_FAILED       = 38,
     EV_DOWNLOAD_CANCELLED    = 39,
+    EV_AUTH_REFRESH_OK       = 40,
 };
 
 // Callback signature
@@ -63,6 +64,8 @@ void                qobuz_backend_free(QobuzBackendOpaque *backend);
 // Auth
 void qobuz_backend_login(QobuzBackendOpaque *backend, const char *email, const char *password);
 void qobuz_backend_set_token(QobuzBackendOpaque *backend, const char *token);
+void qobuz_backend_restore_session(QobuzBackendOpaque *backend, const char *token, const char *refresh_token, uint64_t expires_at);
+void qobuz_backend_refresh_auth(QobuzBackendOpaque *backend);
 void qobuz_backend_get_user(QobuzBackendOpaque *backend);
 
 // Catalog

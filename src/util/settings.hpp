@@ -17,6 +17,12 @@ public:
     QString authToken() const        { return m_settings.value("auth/token").toString(); }
     void setAuthToken(const QString &t) { m_settings.setValue("auth/token", t); }
 
+    QString authRefreshToken() const { return m_settings.value("auth/refresh_token").toString(); }
+    void setAuthRefreshToken(const QString &t) { m_settings.setValue("auth/refresh_token", t); }
+
+    qint64 authExpiresAt() const     { return m_settings.value("auth/expires_at", 0LL).toLongLong(); }
+    void setAuthExpiresAt(qint64 t)  { m_settings.setValue("auth/expires_at", t); }
+
     QString userEmail() const        { return m_settings.value("auth/email").toString(); }
     void setUserEmail(const QString &e) { m_settings.setValue("auth/email", e); }
 

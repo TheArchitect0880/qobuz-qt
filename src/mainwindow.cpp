@@ -16,6 +16,7 @@
 #include <QStatusBar>
 #include <QLabel>
 #include <QLineEdit>
+#include <QDateTime>
 #include <QMessageBox>
 #include <QTimer>
 #include <QJsonArray>
@@ -253,6 +254,16 @@ void MainWindow::connectBackendSignals()
 {
     connect(m_backend, &QobuzBackend::loginSuccess,   this, &MainWindow::onLoginSuccess);
     connect(m_backend, &QobuzBackend::loginError,     this, &MainWindow::onLoginError);
+    connect(m_backend, &QobuzBackend::authRefreshSuccess, this,
+            [this](const QString &token, const QString &refreshToken, qint64 expiresAt) {
+        AppSettings::instance().setAuthToken(token);
+        AppSettings::instance().setAuthRefreshToken(refreshToken);
+        AppSettings::instance().setAuthExpiresAt(expiresAt);
+        if (!m_restoringSessionRefresh)
+            return;
+        m_restoringSessionRefresh = false;
+        continueRestoredSession();
+    });
     connect(m_backend, &QobuzBackend::userLoaded, this, [this](const QJsonObject &user) {
         const qint64 id = static_cast<qint64>(user["id"].toDouble());
         if (id > 0) {
@@ -304,6 +315,12 @@ void MainWindow::connectBackendSignals()
         statusBar()->showMessage(tr("Download cancelled: %1").arg(info["label"].toString()), 5000);
     });
     connect(m_backend, &QobuzBackend::error, this, [this](const QString &msg) {
+        if (m_restoringSessionRefresh) {
+            m_restoringSessionRefresh = false;
+            statusBar()->showMessage(tr("Session refresh failed: %1").arg(msg), 6000);
+            QTimer::singleShot(0, this, &MainWindow::showLoginDialog);
+            return;
+        }
         statusBar()->showMessage(tr("Error: %1").arg(msg), 6000);
     });
 }
@@ -584,23 +601,41 @@ void MainWindow::setupMenuBar()
 
 void MainWindow::tryRestoreSession()
 {
-    const QString token = AppSettings::instance().authToken();
-    if (!token.isEmpty()) {
-        m_backend->setToken(token);
-        if (AppSettings::instance().userId() == 0)
-            m_backend->getUser();  // userLoaded will call m_library->refresh()
-        else
-            m_library->refresh();
-        // Preload favorites so buttons/menus reflect state immediately.
-        m_backend->getFavTracks();
-        m_backend->getFavAlbums();
-        m_backend->getFavArtists();
-        const QString name = AppSettings::instance().displayName();
-        statusBar()->showMessage(tr("Signed in as %1").arg(
-            name.isEmpty() ? AppSettings::instance().userEmail() : name));
-    } else {
+    const AppSettings &settings = AppSettings::instance();
+    const QString token = settings.authToken();
+    const QString refreshToken = settings.authRefreshToken();
+    if (token.isEmpty() && refreshToken.isEmpty()) {
         QTimer::singleShot(200, this, &MainWindow::showLoginDialog);
+        return;
     }
+
+    m_backend->restoreSession(token, refreshToken, settings.authExpiresAt());
+    if (!refreshToken.isEmpty()
+        && (settings.authExpiresAt() <= 0
+            || QDateTime::currentSecsSinceEpoch() + 60 >= settings.authExpiresAt())) {
+        m_restoringSessionRefresh = true;
+        statusBar()->showMessage(tr("Refreshing session..."));
+        m_backend->refreshAuth();
+        return;
+    }
+
+    continueRestoredSession();
+}
+
+void MainWindow::continueRestoredSession()
+{
+    if (AppSettings::instance().userId() == 0)
+        m_backend->getUser();  // userLoaded will call m_library->refresh()
+    else
+        m_library->refresh();
+
+    m_backend->getFavTracks();
+    m_backend->getFavAlbums();
+    m_backend->getFavArtists();
+
+    const QString name = AppSettings::instance().displayName();
+    statusBar()->showMessage(tr("Signed in as %1").arg(
+        name.isEmpty() ? AppSettings::instance().userEmail() : name));
 }
 
 // ---- slots ----
@@ -636,7 +671,7 @@ void MainWindow::showLoginDialog()
         dlg->setBusy(true);
         m_backend->login(email, password);
     });
-    connect(m_backend, &QobuzBackend::loginSuccess, dlg, [dlg](const QString &, const QJsonObject &) {
+    connect(m_backend, &QobuzBackend::loginSuccess, dlg, [dlg](const QString &, const QString &, qint64, const QJsonObject &) {
         dlg->accept();
     });
     connect(m_backend, &QobuzBackend::loginError, dlg, [dlg](const QString &err) {
@@ -652,9 +687,11 @@ void MainWindow::showSettingsDialog()
     dlg.exec();
 }
 
-void MainWindow::onLoginSuccess(const QString &token, const QJsonObject &user)
+void MainWindow::onLoginSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt, const QJsonObject &user)
 {
     AppSettings::instance().setAuthToken(token);
+    AppSettings::instance().setAuthRefreshToken(refreshToken);
+    AppSettings::instance().setAuthExpiresAt(expiresAt);
     const QString displayName = user["display_name"].toString();
     const QString email       = user["email"].toString();
     AppSettings::instance().setDisplayName(displayName);
