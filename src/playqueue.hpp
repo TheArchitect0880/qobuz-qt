@@ -18,7 +18,9 @@ public:
     // ---- Loading a new context ----
 
     /// Replace the queue with all tracks from an album/playlist JSON context.
-    /// @param startIndex  Index of the track to start playing (-1 = first).
+    /// @param startIndex  Original index of the track to start at. If it points
+    ///                    to a non-streamable track, the first streamable track
+    ///                    at or after that index is used.
     void setContext(const QJsonArray &tracks, int startIndex = 0);
 
     // ---- Re-order after a sort (keeps m_playNext, updates m_index) ----
@@ -73,7 +75,10 @@ public:
 
     // ---- Accessors for queue panel ----
 
-    QVector<QJsonObject> upcomingTracks(int maxCount = 200) const;
+    QVector<QJsonObject> upcomingTracks() const;
+
+    /// Peek at the very next track that would play, without advancing. Returns {} if none.
+    QJsonObject peekNext() const;
 
     int playNextCount()  const { return m_playNext.size(); }
     int totalSize()      const { return m_playNext.size() + m_queue.size(); }

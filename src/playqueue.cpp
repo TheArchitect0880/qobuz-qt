@@ -62,12 +62,13 @@ void PlayQueue::clearUpcoming()
 
 void PlayQueue::removeUpcoming(int upcomingIndex)
 {
+    if (upcomingIndex < 0) return;
     if (upcomingIndex < m_playNext.size()) {
         m_playNext.removeAt(upcomingIndex);
     } else {
         const int queueIdx = m_index + 1 + (upcomingIndex - m_playNext.size());
-        if (queueIdx < m_queue.size())
-            m_queue.removeAt(queueIdx);
+        if (queueIdx >= m_queue.size()) return;
+        m_queue.removeAt(queueIdx);
     }
     emit queueChanged();
 }
@@ -120,12 +121,17 @@ qint64 PlayQueue::currentId() const
 QJsonObject PlayQueue::advance()
 {
     if (!m_playNext.isEmpty()) {
-        // Return the playNext item directly — do NOT call current() after
-        // removal, as that would fall back to the already-playing m_index track.
+        // Splice the play-next item into the main queue right after the current
+        // index so current()/currentId() reflect the track actually playing.
         const QJsonObject next = m_playNext.takeFirst();
+        const int insertAt = qMin(m_index + 1, m_queue.size());
+        m_queue.insert(insertAt, next);
+        m_index = insertAt;
         emit queueChanged();
         return next;
     }
+    if (m_index + 1 >= m_queue.size())
+        return {};
     ++m_index;
     emit queueChanged();
     return current();
@@ -133,8 +139,10 @@ QJsonObject PlayQueue::advance()
 
 QJsonObject PlayQueue::stepBack()
 {
-    if (m_index > 0) --m_index;
-    emit queueChanged();
+    if (m_index > 0) {
+        --m_index;
+        emit queueChanged();
+    }
     return m_index < m_queue.size() ? m_queue.at(m_index) : QJsonObject{};
 }
 
@@ -155,17 +163,31 @@ void PlayQueue::setCurrentById(qint64 id)
     }
 }
 
-QVector<QJsonObject> PlayQueue::upcomingTracks(int maxCount) const
+QVector<QJsonObject> PlayQueue::upcomingTracks() const
 {
     QVector<QJsonObject> result;
+    const int tailCount = qMax(0, m_queue.size() - m_index - 1);
+    result.reserve(m_playNext.size() + tailCount);
     result.append(m_playNext);
-    for (int i = m_index + 1; i < m_queue.size() && result.size() < maxCount; ++i)
+    for (int i = m_index + 1; i < m_queue.size(); ++i)
         result.append(m_queue.at(i));
     return result;
 }
 
+QJsonObject PlayQueue::peekNext() const
+{
+    if (!m_playNext.isEmpty())
+        return m_playNext.first();
+    if (m_index + 1 < m_queue.size())
+        return m_queue.at(m_index + 1);
+    return {};
+}
+
 QJsonObject PlayQueue::skipToUpcoming(int upcomingIndex)
 {
+    if (upcomingIndex < 0) return {};
+    const int tailCount = qMax(0, m_queue.size() - m_index - 1);
+    if (upcomingIndex >= m_playNext.size() + tailCount) return {};
     // Remove items 0..upcomingIndex-1 from the front of upcoming
     for (int i = 0; i < upcomingIndex; ++i) {
         if (!m_playNext.isEmpty())
@@ -224,15 +246,15 @@ void PlayQueue::moveUpcomingToTop(int upcomingIndex)
 void PlayQueue::shuffleQueue(int keepAtFront)
 {
     if (m_queue.isEmpty()) return;
+    static thread_local std::mt19937 rng{std::random_device{}()};
     // Keep the current track at index 0 of the remaining queue
     if (keepAtFront >= 0 && keepAtFront < m_queue.size()) {
         QJsonObject current = m_queue.takeAt(keepAtFront);
-        std::mt19937 rng(std::random_device{}());
         std::shuffle(m_queue.begin(), m_queue.end(), rng);
         m_queue.prepend(current);
     } else {
-        std::mt19937 rng(std::random_device{}());
         std::shuffle(m_queue.begin(), m_queue.end(), rng);
     }
     m_index = 0;
+    emit queueChanged();
 }

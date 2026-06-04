@@ -27,11 +27,17 @@ public:
 
             const QJsonArray tracks = album["tracks"].toObject()["items"].toArray();
             if (m_pendingAction == PlayNext) {
-                for (int i = tracks.size() - 1; i >= 0; --i)
-                    m_queue->playNext(tracks[i].toObject());
+                for (int i = tracks.size() - 1; i >= 0; --i) {
+                    const QJsonObject t = tracks[i].toObject();
+                    if (t["streamable"].toBool(true))
+                        m_queue->playNext(t);
+                }
             } else {
-                for (const auto &t : tracks)
-                    m_queue->addToQueue(t.toObject());
+                for (const auto &v : tracks) {
+                    const QJsonObject t = v.toObject();
+                    if (t["streamable"].toBool(true))
+                        m_queue->addToQueue(t);
+                }
             }
             m_pendingId.clear();
         });
