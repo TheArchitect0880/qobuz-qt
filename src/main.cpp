@@ -73,7 +73,7 @@ int main(int argc, char *argv[])
         "QStatusBar { background: #111111; border-top: 1px solid #2a2a2a; }"
     ));
 
-    auto *backend = new QobuzBackend;
+    auto *backend = new QobuzBackend(&app);
     MainWindow window(backend);
     window.show();
 
