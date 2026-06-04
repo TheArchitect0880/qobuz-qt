@@ -207,6 +207,7 @@ fn emit_download_finished(
             "label": label,
             "status": "completed",
             "path": path,
+            "current": total_tracks,
             "total_tracks": total_tracks,
             "failed_tracks": failed_tracks,
         })
