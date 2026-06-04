@@ -185,6 +185,7 @@ ArtistView::ArtistView(QobuzBackend *backend, PlayQueue *queue, QWidget *parent)
                      this, [this](QNetworkReply *reply) {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) return;
+        if (reply->url().toString() != m_currentArtUrl) return;
         QPixmap pix;
         if (pix.loadFromData(reply->readAll()))
             m_artLabel->setPixmap(pix);

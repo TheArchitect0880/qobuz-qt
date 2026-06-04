@@ -212,6 +212,8 @@ void View::onArtReady(QNetworkReply *reply)
     reply->deleteLater();
     if (reply->error() != QNetworkReply::NoError)
         return;
+    if (reply->url().toString() != m_currentArtUrl)
+        return;
     QPixmap pix;
     if (pix.loadFromData(reply->readAll()))
         m_albumArt->setPixmap(pix);
