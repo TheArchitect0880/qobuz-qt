@@ -109,12 +109,15 @@ public:
     double minimumRate() const { return 1.0; }
     double maximumRate() const { return 1.0; }
 
-    bool canGoNext() const { return true; }
-    bool canGoPrevious() const { return true; }
+    bool canGoNext() const { return m_canGoNext; }
+    bool canGoPrevious() const { return m_canGoPrev; }
     bool canPlay() const { return true; }
     bool canPause() const { return true; }
     bool canSeek() const { return true; }
     bool canControl() const { return true; }
+
+    void setCanGoNext(bool v)     { m_canGoNext = v; }
+    void setCanGoPrevious(bool v) { m_canGoPrev = v; }
 
 public slots:
     void Next() { emit nextRequested(); }
@@ -148,6 +151,8 @@ private:
     QVariantMap m_metadata;
     double m_volume = 1.0;
     qlonglong m_positionMicro = 0;
+    bool m_canGoNext = false;
+    bool m_canGoPrev = false;
 };
 
 class Mpris : public QObject
