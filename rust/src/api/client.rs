@@ -791,19 +791,25 @@ impl QobuzClient {
     }
 
     /// Batch-fetch tracks by ID via POST /track/getList.
+    /// The API rejects batches larger than 50, so we chunk automatically.
     async fn get_tracks_by_ids(&self, ids: &[i64]) -> Result<Vec<TrackDto>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let resp = self
-            .post_request("track/getList")
-            .json(&serde_json::json!({ "tracks_id": ids }))
-            .send()
-            .await?;
-        let body = Self::check_response(resp).await?;
-        let items: Vec<TrackDto> =
-            serde_json::from_value(body["tracks"]["items"].clone()).unwrap_or_default();
-        Ok(items)
+        const CHUNK: usize = 50;
+        let mut all = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(CHUNK) {
+            let resp = self
+                .post_request("track/getList")
+                .json(&serde_json::json!({ "tracks_id": chunk }))
+                .send()
+                .await?;
+            let body = Self::check_response(resp).await?;
+            let items: Vec<TrackDto> =
+                serde_json::from_value(body["tracks"]["items"].clone()).unwrap_or_default();
+            all.extend(items);
+        }
+        Ok(all)
     }
 
     pub async fn get_fav_tracks(
