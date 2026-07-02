@@ -30,6 +30,7 @@ namespace List
         void browseGenresRequested();
         void browsePlaylistsRequested();
         void playlistRequested(qint64 playlistId, const QString &name);
+        void playlistDownloadRequested(qint64 playlistId, const QString &name);
         /// Emitted after playlists are loaded so others can cache the list.
         void userPlaylistsChanged(const QVector<QPair<qint64, QString>> &playlists);
         /// Emitted with all user playlist IDs (owned + subscribed).

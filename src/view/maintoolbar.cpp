@@ -201,6 +201,10 @@ MainToolBar::MainToolBar(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
     m_search->setCheckable(true);
     connect(m_search, &QAction::toggled, this, &MainToolBar::searchToggled);
 
+    m_transfers = addAction(Icon::transfers(), tr("Transfers"));
+    m_transfers->setCheckable(true);
+    connect(m_transfers, &QAction::toggled, this, &MainToolBar::transfersToggled);
+
     // ---- Backend signals ----
     connect(m_backend, &QobuzBackend::stateChanged,    this, &MainToolBar::onBackendStateChanged);
     connect(m_backend, &QobuzBackend::trackChanged,    this, &MainToolBar::onTrackChanged);
@@ -302,6 +306,12 @@ void MainToolBar::setSearchToggleChecked(bool checked)
     m_search->setChecked(checked);
 }
 
+void MainToolBar::setTransfersToggleChecked(bool checked)
+{
+    const QSignalBlocker blocker(m_transfers);
+    m_transfers->setChecked(checked);
+}
+
 // ---- private slots ----
 
 void MainToolBar::onPlayPause()
@@ -382,9 +392,9 @@ void MainToolBar::onPositionChanged(quint64 position, quint64 duration)
     if (AppSettings::instance().gaplessEnabled() && duration > 0) {
         if ((position > duration / 2) || (duration > 60 && (duration - position) <= 60)) {
             if (m_prefetchedTrackId == 0 && m_queue->canGoNext()) {
-                const auto upcoming = m_queue->upcomingTracks(1);
-                if (!upcoming.isEmpty()) {
-                    const qint64 nextId = static_cast<qint64>(upcoming.first()["id"].toDouble());
+                const QJsonObject next = m_queue->peekNext();
+                if (!next.isEmpty()) {
+                    const qint64 nextId = static_cast<qint64>(next["id"].toDouble());
                     if (nextId > 0) {
                         m_prefetchedTrackId = nextId;
                         m_backend->prefetchTrack(nextId, AppSettings::instance().preferredFormat());
@@ -525,6 +535,7 @@ void MainToolBar::onAlbumArtReady(QNetworkReply *reply)
 {
     reply->deleteLater();
     if (reply->error() != QNetworkReply::NoError) return;
+    if (reply->url().toString() != m_currentArtUrl) return;
     QPixmap pix;
     if (pix.loadFromData(reply->readAll()))
         m_artLabel->setPixmap(pix);

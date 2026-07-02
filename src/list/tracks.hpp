@@ -49,6 +49,7 @@ namespace List
 
     signals:
         void playTrackRequested(qint64 trackId);
+        void downloadTracksRequested(const QVector<qint64> &trackIds);
         void addToPlaylistRequested(qint64 trackId, qint64 playlistId);
         void removeFromPlaylistRequested(qint64 playlistId, qint64 playlistTrackId);
 

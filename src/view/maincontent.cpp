@@ -48,6 +48,18 @@ MainContent::MainContent(QobuzBackend *backend, PlayQueue *queue, QWidget *paren
             return;
         emit playlistFollowToggled(id, !m_header->playlistFollowed());
     });
+    QObject::connect(m_header->downloadButton(), &QPushButton::clicked,
+                     [this] {
+        const QString albumId = m_header->albumId();
+        if (!albumId.isEmpty()) {
+            emit downloadAlbumRequested(albumId);
+            return;
+        }
+
+        const qint64 playlistId = m_header->playlistId();
+        if (playlistId > 0)
+            emit downloadPlaylistRequested(playlistId);
+    });
     QObject::connect(m_header->favButton(), &QPushButton::clicked,
                      [this] {
         const QString albumId = m_header->albumId();

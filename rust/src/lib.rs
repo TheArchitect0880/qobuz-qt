@@ -2,15 +2,22 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod api;
+mod download;
 mod player;
 
 use std::{
+    collections::HashMap,
     ffi::{CStr, CString},
     os::raw::{c_char, c_int, c_void},
-    sync::Arc,
+    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc},
 };
 
 use api::{Format, QobuzClient};
+use download::{
+    album_folder_path, build_audio_profile, build_tag_metadata, cover_art_url, download_artwork,
+    download_to_file, file_extension, max_disc_number, playlist_folder_path, tag_audio_file,
+    track_output_path, track_title, year_from_date, DownloadSettings, CANCELLED_ERROR,
+};
 use player::{Player, PlayerState};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -44,6 +51,7 @@ pub const EV_POSITION: c_int = 16;
 pub const EV_TRACK_URL_OK: c_int = 17;
 pub const EV_TRACK_URL_ERR: c_int = 18;
 pub const EV_GENERIC_ERR: c_int = 19;
+pub const EV_AUTH_REFRESH_OK: c_int = 40;
 pub const EV_ARTIST_RELEASES_OK: c_int = 24;
 pub const EV_DEEP_SHUFFLE_OK: c_int = 25;
 pub const EV_MOST_POPULAR_OK: c_int = 26;
@@ -55,6 +63,11 @@ pub const EV_DISCOVER_PLAYLISTS_OK: c_int = 31;
 pub const EV_PLAYLIST_SEARCH_OK: c_int = 32;
 pub const EV_PLAYLIST_SUBSCRIBED: c_int = 33;
 pub const EV_PLAYLIST_UNSUBSCRIBED: c_int = 34;
+pub const EV_DOWNLOAD_STARTED: c_int = 35;
+pub const EV_DOWNLOAD_PROGRESS: c_int = 36;
+pub const EV_DOWNLOAD_FINISHED: c_int = 37;
+pub const EV_DOWNLOAD_FAILED: c_int = 38;
+pub const EV_DOWNLOAD_CANCELLED: c_int = 39;
 
 // ---------- Callback ----------
 
@@ -79,6 +92,8 @@ struct BackendInner {
     ud: SendPtr,
     replaygain_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     prefetch: std::sync::Arc<tokio::sync::Mutex<Option<PrefetchedTrack>>>,
+    next_transfer_id: AtomicU64,
+    download_cancels: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
 }
 
 pub struct Backend(BackendInner);
@@ -95,11 +110,210 @@ fn err_json(msg: &str) -> String {
     serde_json::json!({ "error": msg }).to_string()
 }
 
+fn auth_json(token: &str, refresh_token: &str, expires_at: u64) -> String {
+    serde_json::json!({
+        "token": token,
+        "refresh_token": refresh_token,
+        "expires_at": expires_at,
+    })
+    .to_string()
+}
+
+fn parse_download_settings(json: &str) -> DownloadSettings {
+    serde_json::from_str::<DownloadSettings>(json)
+        .unwrap_or_default()
+        .normalized()
+}
+
+fn album_for_track_metadata(album: &api::models::AlbumDto) -> api::models::AlbumDto {
+    let mut album = album.clone();
+    album.tracks = None;
+    album
+}
+
+fn track_with_album_metadata(
+    track: &api::models::TrackDto,
+    album: &api::models::AlbumDto,
+) -> api::models::TrackDto {
+    let mut track = track.clone();
+    track.album = Some(album_for_track_metadata(album));
+    track
+}
+
+fn has_album_metadata(track: &api::models::TrackDto) -> bool {
+    let Some(album) = track.album.as_ref() else {
+        return false;
+    };
+    album
+        .title
+        .as_deref()
+        .is_some_and(|title| !title.trim().is_empty())
+        && album
+            .artist
+            .as_ref()
+            .and_then(|artist| artist.name.as_deref())
+            .is_some_and(|artist| !artist.trim().is_empty())
+}
+
+fn emit_download_started(
+    cb: EventCallback,
+    ud: SendPtr,
+    kind: &str,
+    id: &str,
+    transfer_id: u64,
+    label: &str,
+    total_tracks: usize,
+) {
+    call_cb(
+        cb,
+        ud,
+        EV_DOWNLOAD_STARTED,
+        &serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "transfer_id": transfer_id,
+            "label": label,
+            "status": "running",
+            "total_tracks": total_tracks,
+        })
+        .to_string(),
+    );
+}
+
+fn emit_download_progress(
+    cb: EventCallback,
+    ud: SendPtr,
+    kind: &str,
+    id: &str,
+    transfer_id: u64,
+    current: usize,
+    total_tracks: usize,
+    track_id: i64,
+    title: &str,
+    downloaded: u64,
+    total_bytes: Option<u64>,
+    failed_tracks: usize,
+) {
+    call_cb(
+        cb,
+        ud,
+        EV_DOWNLOAD_PROGRESS,
+        &serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "transfer_id": transfer_id,
+            "status": "running",
+            "current": current,
+            "total_tracks": total_tracks,
+            "track_id": track_id,
+            "track_title": title,
+            "downloaded_bytes": downloaded,
+            "total_bytes": total_bytes,
+            "failed_tracks": failed_tracks,
+        })
+        .to_string(),
+    );
+}
+
+fn emit_download_finished(
+    cb: EventCallback,
+    ud: SendPtr,
+    kind: &str,
+    id: &str,
+    transfer_id: u64,
+    label: &str,
+    path: &str,
+    total_tracks: usize,
+    failed_tracks: usize,
+) {
+    call_cb(
+        cb,
+        ud,
+        EV_DOWNLOAD_FINISHED,
+        &serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "transfer_id": transfer_id,
+            "label": label,
+            "status": "completed",
+            "path": path,
+            "current": total_tracks,
+            "total_tracks": total_tracks,
+            "failed_tracks": failed_tracks,
+        })
+        .to_string(),
+    );
+}
+
+fn emit_download_failed(cb: EventCallback, ud: SendPtr, kind: &str, id: &str, transfer_id: u64, error: &str) {
+    call_cb(
+        cb,
+        ud,
+        EV_DOWNLOAD_FAILED,
+        &serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "transfer_id": transfer_id,
+            "status": "failed",
+            "error": error,
+        })
+        .to_string(),
+    );
+}
+
+fn emit_download_cancelled(cb: EventCallback, ud: SendPtr, kind: &str, id: &str, transfer_id: u64, label: &str) {
+    call_cb(
+        cb,
+        ud,
+        EV_DOWNLOAD_CANCELLED,
+        &serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "transfer_id": transfer_id,
+            "status": "cancelled",
+            "label": label,
+        })
+        .to_string(),
+    );
+}
+
 fn spawn<F>(inner: &BackendInner, f: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     inner.rt.spawn(f);
+}
+
+fn is_cancelled_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains(CANCELLED_ERROR)
+}
+
+async fn prepare_cover_art(
+    url: Option<String>,
+    target_folder: &std::path::Path,
+    temp_name: &str,
+    keep_saved_copy: bool,
+) -> Option<std::path::PathBuf> {
+    let url = url?;
+    if keep_saved_copy {
+        return download_artwork(&url, target_folder).await.ok().flatten();
+    }
+
+    let temp_path = std::env::temp_dir().join(temp_name);
+    if download_to_file(&url, &temp_path, None, |_, _| {}).await.is_ok() {
+        Some(temp_path)
+    } else {
+        None
+    }
+}
+
+async fn cleanup_temporary_cover_art(path: Option<std::path::PathBuf>, keep_saved_copy: bool) {
+    if keep_saved_copy {
+        return;
+    }
+    if let Some(path) = path {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
 
 // ---------- Construction / destruction ----------
@@ -127,6 +341,8 @@ pub unsafe extern "C" fn qobuz_backend_new(
         ud: SendPtr(userdata),
         replaygain_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         prefetch: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        next_transfer_id: AtomicU64::new(1),
+        download_cancels: Arc::new(Mutex::new(HashMap::new())),
     })))
 }
 
@@ -163,6 +379,24 @@ pub unsafe extern "C" fn qobuz_backend_login(
                     .or(resp.user_auth_token.as_deref())
                     .unwrap_or("")
                     .to_string();
+                let refresh_token = resp
+                    .oauth2
+                    .as_ref()
+                    .and_then(|o| o.refresh_token.as_deref())
+                    .unwrap_or("")
+                    .to_string();
+                let expires_at = resp
+                    .oauth2
+                    .as_ref()
+                    .and_then(|o| o.expires_in)
+                    .map(|expires_in| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs()
+                            + expires_in.max(0) as u64
+                    })
+                    .unwrap_or(0);
                 let user_val = resp
                     .user
                     .as_ref()
@@ -170,7 +404,13 @@ pub unsafe extern "C" fn qobuz_backend_login(
                     .unwrap_or_default();
                 (
                     EV_LOGIN_OK,
-                    serde_json::json!({"token": token, "user": user_val}).to_string(),
+                    serde_json::json!({
+                        "token": token,
+                        "refresh_token": refresh_token,
+                        "expires_at": expires_at,
+                        "user": user_val,
+                    })
+                    .to_string(),
                 )
             }
             Err(e) => (EV_LOGIN_ERR, err_json(&e.to_string())),
@@ -184,6 +424,50 @@ pub unsafe extern "C" fn qobuz_backend_set_token(ptr: *mut Backend, token: *cons
     let inner = &(*ptr).0;
     let token = CStr::from_ptr(token).to_string_lossy().into_owned();
     inner.client.blocking_lock().set_auth_token(token);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_restore_session(
+    ptr: *mut Backend,
+    token: *const c_char,
+    refresh_token: *const c_char,
+    expires_at: u64,
+) {
+    let inner = &(*ptr).0;
+    let token = CStr::from_ptr(token).to_string_lossy().into_owned();
+    let refresh_token = CStr::from_ptr(refresh_token).to_string_lossy().into_owned();
+    inner.client.blocking_lock().set_auth_state(
+        (!token.is_empty()).then_some(token),
+        (!refresh_token.is_empty()).then_some(refresh_token),
+        (expires_at > 0).then_some(expires_at),
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_refresh_auth(ptr: *mut Backend) {
+    let inner = &(*ptr).0;
+    let client = inner.client.clone();
+    let cb = inner.cb;
+    let ud = inner.ud;
+
+    spawn(inner, async move {
+        let result = {
+            let mut client = client.lock().await;
+            client.refresh_oauth_token().await.map(|_| client.auth_state())
+        };
+        let (ev, json) = match result {
+            Ok((token, refresh_token, expires_at)) => (
+                EV_AUTH_REFRESH_OK,
+                auth_json(
+                    token.as_deref().unwrap_or(""),
+                    refresh_token.as_deref().unwrap_or(""),
+                    expires_at.unwrap_or(0),
+                ),
+            ),
+            Err(e) => (EV_GENERIC_ERR, err_json(&e.to_string())),
+        };
+        call_cb(cb, ud, ev, &json);
+    });
 }
 
 // ---------- Search ----------
@@ -1329,4 +1613,482 @@ pub unsafe extern "C" fn qobuz_backend_unsubscribe_playlist(ptr: *mut Backend, p
             Err(e) => call_cb(cb, ud, EV_GENERIC_ERR, &err_json(&e.to_string())),
         }
     });
+}
+
+// ---------- Downloads ----------
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_download_track(
+    ptr: *mut Backend,
+    track_id: i64,
+    format_id: i32,
+    settings_json: *const c_char,
+) {
+    let inner = &(*ptr).0;
+    let client = inner.client.clone();
+    let cb = inner.cb;
+    let ud = inner.ud;
+    let format = Format::from_id(format_id);
+    let settings = parse_download_settings(&CStr::from_ptr(settings_json).to_string_lossy());
+    let transfer_id = inner.next_transfer_id.fetch_add(1, Ordering::Relaxed);
+    let cancel = Arc::new(AtomicBool::new(false));
+    inner.download_cancels.blocking_lock().insert(transfer_id, cancel.clone());
+    let download_cancels = inner.download_cancels.clone();
+
+    spawn(inner, async move {
+        let result = async {
+            let track = client.lock().await.get_track(track_id).await?;
+            let download = client.lock().await.get_track_download_url(track_id, format).await?;
+            let ext = file_extension(&download, format);
+            let audio = build_audio_profile(&download, track.album.as_ref(), format);
+            let title = track_title(&track);
+            let out_path = track_output_path(
+                &settings,
+                "qobuz",
+                &track,
+                &title,
+                &ext,
+                None,
+                0,
+                None,
+                Some(&audio),
+            );
+            emit_download_started(cb, ud, "track", &track_id.to_string(), transfer_id, &title, 1);
+
+            let art_folder = out_path.parent().unwrap_or_else(|| std::path::Path::new(&settings.folder));
+            let cover_path = if settings.save_artwork || settings.embed_artwork {
+                prepare_cover_art(
+                    cover_art_url(track.album.as_ref()),
+                    art_folder,
+                    &format!("qobuz-qt-track-cover-{track_id}.jpg"),
+                    settings.save_artwork,
+                )
+                .await
+            } else {
+                None
+            };
+
+            let stream_url = download.url.ok_or_else(|| anyhow::anyhow!("download URL missing"))?;
+            download_to_file(&stream_url, &out_path, Some(&cancel), |downloaded, total| {
+                emit_download_progress(
+                    cb,
+                    ud,
+                    "track",
+                    &track_id.to_string(),
+                    transfer_id,
+                    1,
+                    1,
+                    track_id,
+                    &title,
+                    downloaded,
+                    total,
+                    0,
+                );
+            })
+            .await?;
+
+            let tag_meta = build_tag_metadata(&settings, &track, &title, 1, 1, None, None);
+            tag_audio_file(
+                &out_path,
+                &ext,
+                &tag_meta,
+                if settings.embed_artwork { cover_path.as_deref() } else { None },
+            )?;
+            cleanup_temporary_cover_art(cover_path.clone(), settings.save_artwork).await;
+
+            Ok::<_, anyhow::Error>(out_path)
+        }
+        .await;
+
+        download_cancels.lock().await.remove(&transfer_id);
+
+        match result {
+            Ok(path) => emit_download_finished(
+                cb,
+                ud,
+                "track",
+                &track_id.to_string(),
+                transfer_id,
+                "Track",
+                &path.to_string_lossy(),
+                1,
+                0,
+            ),
+            Err(e) if is_cancelled_error(&e) => emit_download_cancelled(cb, ud, "track", &track_id.to_string(), transfer_id, "Track"),
+            Err(e) => emit_download_failed(cb, ud, "track", &track_id.to_string(), transfer_id, &e.to_string()),
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_download_album(
+    ptr: *mut Backend,
+    album_id: *const c_char,
+    format_id: i32,
+    settings_json: *const c_char,
+) {
+    let inner = &(*ptr).0;
+    let client = inner.client.clone();
+    let cb = inner.cb;
+    let ud = inner.ud;
+    let format = Format::from_id(format_id);
+    let album_id = CStr::from_ptr(album_id).to_string_lossy().into_owned();
+    let settings = parse_download_settings(&CStr::from_ptr(settings_json).to_string_lossy());
+    let transfer_id = inner.next_transfer_id.fetch_add(1, Ordering::Relaxed);
+    let cancel = Arc::new(AtomicBool::new(false));
+    inner.download_cancels.blocking_lock().insert(transfer_id, cancel.clone());
+    let download_cancels = inner.download_cancels.clone();
+
+    spawn(inner, async move {
+        let result = async {
+            let album = client.lock().await.get_album(&album_id).await?;
+            let tracks = album
+                .tracks
+                .as_ref()
+                .and_then(|tracks| tracks.items.clone())
+                .ok_or_else(|| anyhow::anyhow!("album has no tracks"))?;
+            if tracks.is_empty() {
+                return Err(anyhow::anyhow!("album has no tracks"));
+            }
+
+            let album_title = album.title.as_deref().unwrap_or("Unknown");
+            let album_artist = album
+                .artist
+                .as_ref()
+                .and_then(|artist| artist.name.as_deref())
+                .unwrap_or("Unknown");
+            let year = album
+                .release_date_original
+                .as_deref()
+                .map(year_from_date)
+                .unwrap_or_else(|| "Unknown".to_string());
+            let preview = client
+                .lock()
+                .await
+                .get_track_download_url(tracks[0].id, format)
+                .await
+                .unwrap_or(api::models::TrackFileUrlDto {
+                    track_id: None,
+                    duration: None,
+                    url: None,
+                    url_template: None,
+                    n_segments: None,
+                    format_id: Some(format.id()),
+                    mime_type: None,
+                    sampling_rate: None,
+                    bit_depth: None,
+                    key: None,
+                });
+            let audio = build_audio_profile(&preview, Some(&album), format);
+            let folder = album_folder_path(&settings, "qobuz", &album_id, album_title, album_artist, &year, &audio);
+            emit_download_started(cb, ud, "album", &album_id, transfer_id, album_title, tracks.len());
+
+            if settings.save_artwork {
+                let _ = prepare_cover_art(
+                    cover_art_url(Some(&album)),
+                    &folder,
+                    &format!("qobuz-qt-album-cover-{}.jpg", album_id),
+                    true,
+                )
+                .await;
+            }
+
+            let total_tracks = tracks.len();
+            let disc_total = max_disc_number(&tracks);
+            let shared_cover = if settings.embed_artwork {
+                prepare_cover_art(
+                    cover_art_url(Some(&album)),
+                    &folder,
+                    &format!("qobuz-qt-album-cover-{}.jpg", album_id),
+                    settings.save_artwork,
+                )
+                .await
+            } else {
+                None
+            };
+            let mut failed_tracks = 0usize;
+            for (index, track) in tracks.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    anyhow::bail!(CANCELLED_ERROR);
+                }
+                let metadata_track = track_with_album_metadata(track, &album);
+                let title = track_title(&metadata_track);
+                let track_result = async {
+                    let download = client.lock().await.get_track_download_url(metadata_track.id, format).await?;
+                    let ext = file_extension(&download, format);
+                    let out_path = track_output_path(
+                        &settings,
+                        "qobuz",
+                        &metadata_track,
+                        &title,
+                        &ext,
+                        Some(&folder),
+                        disc_total,
+                        None,
+                        None,
+                    );
+                    let stream_url = download.url.ok_or_else(|| anyhow::anyhow!("download URL missing"))?;
+                    download_to_file(&stream_url, &out_path, Some(&cancel), |downloaded, total| {
+                        emit_download_progress(
+                            cb,
+                            ud,
+                            "album",
+                            &album_id,
+                            transfer_id,
+                            index + 1,
+                            total_tracks,
+                            metadata_track.id,
+                            &title,
+                            downloaded,
+                            total,
+                            failed_tracks,
+                        );
+                    })
+                    .await?;
+                    let tag_meta = build_tag_metadata(
+                        &settings,
+                        &metadata_track,
+                        &title,
+                        disc_total,
+                        total_tracks as i32,
+                        None,
+                        None,
+                    );
+                    tag_audio_file(
+                        &out_path,
+                        &ext,
+                        &tag_meta,
+                        if settings.embed_artwork { shared_cover.as_deref() } else { None },
+                    )?;
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+
+                if let Err(err) = track_result {
+                    if is_cancelled_error(&err) {
+                        cleanup_temporary_cover_art(shared_cover.clone(), settings.save_artwork).await;
+                        return Err(err);
+                    }
+                    failed_tracks += 1;
+                    emit_download_progress(
+                        cb,
+                        ud,
+                        "album",
+                        &album_id,
+                        transfer_id,
+                        index + 1,
+                        total_tracks,
+                        metadata_track.id,
+                        &title,
+                        0,
+                        None,
+                        failed_tracks,
+                    );
+                }
+            }
+
+            cleanup_temporary_cover_art(shared_cover.clone(), settings.save_artwork).await;
+
+            Ok::<_, anyhow::Error>((folder, failed_tracks, total_tracks, album_title.to_string()))
+        }
+        .await;
+
+        download_cancels.lock().await.remove(&transfer_id);
+
+        match result {
+            Ok((path, failed_tracks, total_tracks, label)) => emit_download_finished(
+                cb,
+                ud,
+                "album",
+                &album_id,
+                transfer_id,
+                &label,
+                &path.to_string_lossy(),
+                total_tracks,
+                failed_tracks,
+            ),
+            Err(e) if is_cancelled_error(&e) => emit_download_cancelled(cb, ud, "album", &album_id, transfer_id, &album_id),
+            Err(e) => emit_download_failed(cb, ud, "album", &album_id, transfer_id, &e.to_string()),
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_download_playlist(
+    ptr: *mut Backend,
+    playlist_id: i64,
+    format_id: i32,
+    settings_json: *const c_char,
+) {
+    let inner = &(*ptr).0;
+    let client = inner.client.clone();
+    let cb = inner.cb;
+    let ud = inner.ud;
+    let format = Format::from_id(format_id);
+    let settings = parse_download_settings(&CStr::from_ptr(settings_json).to_string_lossy());
+    let transfer_id = inner.next_transfer_id.fetch_add(1, Ordering::Relaxed);
+    let cancel = Arc::new(AtomicBool::new(false));
+    inner.download_cancels.blocking_lock().insert(transfer_id, cancel.clone());
+    let download_cancels = inner.download_cancels.clone();
+
+    spawn(inner, async move {
+        let result = async {
+            let playlist = client.lock().await.get_playlist_all(playlist_id).await?;
+            let tracks = playlist
+                .tracks
+                .as_ref()
+                .and_then(|tracks| tracks.items.clone())
+                .ok_or_else(|| anyhow::anyhow!("playlist has no tracks"))?;
+            if tracks.is_empty() {
+                return Err(anyhow::anyhow!("playlist has no tracks"));
+            }
+            let name = playlist.name.as_deref().unwrap_or("Unknown");
+            let folder = playlist_folder_path(&settings, "qobuz", name);
+            emit_download_started(cb, ud, "playlist", &playlist_id.to_string(), transfer_id, name, tracks.len());
+
+            let total_tracks = tracks.len();
+            let mut failed_tracks = 0usize;
+            for (index, track) in tracks.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    anyhow::bail!(CANCELLED_ERROR);
+                }
+                let metadata_track = if has_album_metadata(track) {
+                    track.clone()
+                } else {
+                    client
+                        .lock()
+                        .await
+                        .get_track(track.id)
+                        .await
+                        .unwrap_or_else(|_| track.clone())
+                };
+                let title = track_title(&metadata_track);
+                let playlist_position = if settings.renumber_playlist_tracks {
+                    Some(index + 1)
+                } else {
+                    None
+                };
+                let track_result = async {
+                    let download = client.lock().await.get_track_download_url(metadata_track.id, format).await?;
+                    let ext = file_extension(&download, format);
+                    let out_path = track_output_path(
+                        &settings,
+                        "qobuz",
+                        &metadata_track,
+                        &title,
+                        &ext,
+                        Some(&folder),
+                        1,
+                        playlist_position,
+                        None,
+                    );
+                    let cover_path = if settings.embed_artwork {
+                        prepare_cover_art(
+                            cover_art_url(metadata_track.album.as_ref()),
+                            &folder,
+                            &format!("qobuz-qt-playlist-cover-{}-{}.jpg", playlist_id, metadata_track.id),
+                            false,
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+                    let stream_url = download.url.ok_or_else(|| anyhow::anyhow!("download URL missing"))?;
+                    download_to_file(&stream_url, &out_path, Some(&cancel), |downloaded, total| {
+                        emit_download_progress(
+                            cb,
+                            ud,
+                            "playlist",
+                            &playlist_id.to_string(),
+                            transfer_id,
+                            index + 1,
+                            total_tracks,
+                            metadata_track.id,
+                            &title,
+                            downloaded,
+                            total,
+                            failed_tracks,
+                        );
+                    })
+                    .await?;
+                    let tag_meta = build_tag_metadata(
+                        &settings,
+                        &metadata_track,
+                        &title,
+                        1,
+                        total_tracks as i32,
+                        Some(name),
+                        playlist_position,
+                    );
+                    tag_audio_file(
+                        &out_path,
+                        &ext,
+                        &tag_meta,
+                        if settings.embed_artwork { cover_path.as_deref() } else { None },
+                    )?;
+                    cleanup_temporary_cover_art(cover_path, false).await;
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+
+                if let Err(err) = track_result {
+                    if is_cancelled_error(&err) {
+                        return Err(err);
+                    }
+                    failed_tracks += 1;
+                    emit_download_progress(
+                        cb,
+                        ud,
+                        "playlist",
+                        &playlist_id.to_string(),
+                        transfer_id,
+                        index + 1,
+                        total_tracks,
+                        metadata_track.id,
+                        &title,
+                        0,
+                        None,
+                        failed_tracks,
+                    );
+                }
+            }
+
+            Ok::<_, anyhow::Error>((folder, failed_tracks, total_tracks, name.to_string()))
+        }
+        .await;
+
+        download_cancels.lock().await.remove(&transfer_id);
+
+        match result {
+            Ok((path, failed_tracks, total_tracks, label)) => emit_download_finished(
+                cb,
+                ud,
+                "playlist",
+                &playlist_id.to_string(),
+                transfer_id,
+                &label,
+                &path.to_string_lossy(),
+                total_tracks,
+                failed_tracks,
+            ),
+            Err(e) if is_cancelled_error(&e) => emit_download_cancelled(cb, ud, "playlist", &playlist_id.to_string(), transfer_id, &playlist_id.to_string()),
+            Err(e) => emit_download_failed(cb, ud, "playlist", &playlist_id.to_string(), transfer_id, &e.to_string()),
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_cancel_download(ptr: *mut Backend, transfer_id: u64) {
+    let inner = &(*ptr).0;
+    if let Some(cancel) = inner.download_cancels.blocking_lock().get(&transfer_id).cloned() {
+        cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn qobuz_backend_cancel_all_downloads(ptr: *mut Backend) {
+    let inner = &(*ptr).0;
+    for cancel in inner.download_cancels.blocking_lock().values() {
+        cancel.store(true, Ordering::Relaxed);
+    }
 }

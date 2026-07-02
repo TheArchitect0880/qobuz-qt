@@ -27,6 +27,8 @@ thiserror = "2"
 md5 = "0.7"
 dirs = "5"
 toml = "0.8"
+id3 = "1"
+metaflac = "0.2"
 
 # Crypto — qbz-1 key derivation + segment decryption
 aes   = "0.8"

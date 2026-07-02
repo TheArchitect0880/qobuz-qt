@@ -287,6 +287,9 @@ void Tracks::onContextMenu(const QPoint &pos)
         selCount > 1 ? tr("Play next (%1 tracks)").arg(selCount) : tr("Play next"));
     auto *addQueue = menu.addAction(QIcon(":/res/icons/media-playlist-append.svg"),
         selCount > 1 ? tr("Add to queue (%1 tracks)").arg(selCount) : tr("Add to queue"));
+    auto *download = menu.addAction(
+        QIcon(":/res/icons/download.svg"),
+        selCount > 1 ? tr("Download selected (%1 tracks)").arg(selCount) : tr("Download track"));
     menu.addSeparator();
 
     const bool isFav = m_model->isFav(id);
@@ -319,6 +322,17 @@ void Tracks::onContextMenu(const QPoint &pos)
     connect(addQueue, &QAction::triggered, this, [this, selectedTracks] {
         for (const auto &t : selectedTracks)
             m_queue->addToQueue(t);
+    });
+    connect(download, &QAction::triggered, this, [this, selectedTracks] {
+        QVector<qint64> trackIds;
+        trackIds.reserve(selectedTracks.size());
+        for (const QJsonObject &track : selectedTracks) {
+            const qint64 trackId = static_cast<qint64>(track["id"].toDouble());
+            if (trackId > 0)
+                trackIds.append(trackId);
+        }
+        if (!trackIds.isEmpty())
+            emit downloadTracksRequested(trackIds);
     });
 
     // Open album / queue album

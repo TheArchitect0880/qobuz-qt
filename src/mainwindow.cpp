@@ -16,6 +16,7 @@
 #include <QStatusBar>
 #include <QLabel>
 #include <QLineEdit>
+#include <QDateTime>
 #include <QMessageBox>
 #include <QTimer>
 #include <QJsonArray>
@@ -110,6 +111,10 @@ void MainWindow::setupDocks()
     m_queuePanel = new QueuePanel(m_backend, m_queue, this);
     m_queuePanel->hide();
     addDockWidget(Qt::RightDockWidgetArea, m_queuePanel);
+
+    m_transfersPanel = new TransfersPanel(this);
+    m_transfersPanel->hide();
+    addDockWidget(Qt::RightDockWidgetArea, m_transfersPanel);
 
     // ---- Search side panel (right) ----
     m_sidePanel = new SidePanel::View(m_backend, m_queue, this);
@@ -209,12 +214,12 @@ void MainWindow::setupMpris()
     connect(m_mpris->player(), &MprisPlayerAdaptor::nextRequested, this, [this] {
         if (!m_queue->canGoNext()) return;
         const qint64 id = static_cast<qint64>(m_queue->advance()["id"].toDouble());
-        if (id > 0) m_backend->playTrack(id);
+        if (id > 0) m_backend->playTrack(id, AppSettings::instance().preferredFormat());
     });
     connect(m_mpris->player(), &MprisPlayerAdaptor::previousRequested, this, [this] {
         if (!m_queue->canGoPrev()) return;
         const qint64 id = static_cast<qint64>(m_queue->stepBack()["id"].toDouble());
-        if (id > 0) m_backend->playTrack(id);
+        if (id > 0) m_backend->playTrack(id, AppSettings::instance().preferredFormat());
     });
     connect(m_mpris->player(), &MprisPlayerAdaptor::seekRequested, m_backend, [this](qlonglong offsetMicroseconds) {
         qint64 newPos = m_backend->position() + (offsetMicroseconds / 1000000LL);
@@ -236,6 +241,12 @@ void MainWindow::setupMpris()
     connect(m_backend, &QobuzBackend::positionChanged, this, [this](quint64 pos) {
         m_mpris->player()->updatePosition(pos);
     });
+    auto updateMprisNav = [this] {
+        m_mpris->player()->setCanGoNext(m_queue->canGoNext());
+        m_mpris->player()->setCanGoPrevious(m_queue->canGoPrev());
+    };
+    connect(m_queue, &PlayQueue::queueChanged, this, updateMprisNav);
+    updateMprisNav();
 #endif
 }
 
@@ -243,6 +254,16 @@ void MainWindow::connectBackendSignals()
 {
     connect(m_backend, &QobuzBackend::loginSuccess,   this, &MainWindow::onLoginSuccess);
     connect(m_backend, &QobuzBackend::loginError,     this, &MainWindow::onLoginError);
+    connect(m_backend, &QobuzBackend::authRefreshSuccess, this,
+            [this](const QString &token, const QString &refreshToken, qint64 expiresAt) {
+        AppSettings::instance().setAuthToken(token);
+        AppSettings::instance().setAuthRefreshToken(refreshToken);
+        AppSettings::instance().setAuthExpiresAt(expiresAt);
+        if (!m_restoringSessionRefresh)
+            return;
+        m_restoringSessionRefresh = false;
+        continueRestoredSession();
+    });
     connect(m_backend, &QobuzBackend::userLoaded, this, [this](const QJsonObject &user) {
         const qint64 id = static_cast<qint64>(user["id"].toDouble());
         if (id > 0) {
@@ -285,7 +306,21 @@ void MainWindow::connectBackendSignals()
         statusBar()->showMessage(tr("Playlist unfollowed"), 3000);
     });
     connect(m_backend, &QobuzBackend::trackChanged,   this, &MainWindow::onTrackChanged);
+    connect(m_backend, &QobuzBackend::downloadStarted, this, &MainWindow::onDownloadStarted);
+    connect(m_backend, &QobuzBackend::downloadProgress, this, &MainWindow::onDownloadProgress);
+    connect(m_backend, &QobuzBackend::downloadFinished, this, &MainWindow::onDownloadFinished);
+    connect(m_backend, &QobuzBackend::downloadFailed, this, &MainWindow::onDownloadFailed);
+    connect(m_backend, &QobuzBackend::downloadCancelled, m_transfersPanel, &TransfersPanel::onTransferCancelled);
+    connect(m_backend, &QobuzBackend::downloadCancelled, this, [this](const QJsonObject &info) {
+        statusBar()->showMessage(tr("Download cancelled: %1").arg(info["label"].toString()), 5000);
+    });
     connect(m_backend, &QobuzBackend::error, this, [this](const QString &msg) {
+        if (m_restoringSessionRefresh) {
+            m_restoringSessionRefresh = false;
+            statusBar()->showMessage(tr("Session refresh failed: %1").arg(msg), 6000);
+            QTimer::singleShot(0, this, &MainWindow::showLoginDialog);
+            return;
+        }
         statusBar()->showMessage(tr("Error: %1").arg(msg), 6000);
     });
 }
@@ -330,6 +365,11 @@ void MainWindow::connectLibrarySignals()
         m_backend->getPlaylist(id);
         statusBar()->showMessage(tr("Loading playlist: %1…").arg(name));
     });
+    connect(m_library, &List::Library::playlistDownloadRequested,
+            this, [this](qint64 id, const QString &name) {
+        m_backend->downloadPlaylist(id, AppSettings::instance().downloadFormat());
+        statusBar()->showMessage(tr("Downloading playlist: %1…").arg(name));
+    });
     connect(m_library, &List::Library::browseGenresRequested, this, [this] {
         const int libraryWidth = currentLibraryDockWidth();
         m_content->showGenreBrowser();
@@ -349,6 +389,16 @@ void MainWindow::connectContentSignals()
     // ---- Track list → playback / playlist management ----
     connect(m_content->tracksList(), &List::Tracks::playTrackRequested,
             this, &MainWindow::onPlayTrackRequested);
+    connect(m_content->tracksList(), &List::Tracks::downloadTracksRequested,
+            this, [this](const QVector<qint64> &trackIds) {
+        const int formatId = AppSettings::instance().downloadFormat();
+        for (qint64 trackId : trackIds)
+            m_backend->downloadTrack(trackId, formatId);
+        statusBar()->showMessage(
+            trackIds.size() == 1
+                ? tr("Downloading track…")
+                : tr("Downloading %1 tracks…").arg(trackIds.size()));
+    });
     connect(m_content->tracksList(), &List::Tracks::addToPlaylistRequested,
             this, [this](qint64 trackId, qint64 playlistId) {
         m_backend->addTrackToPlaylist(playlistId, trackId);
@@ -395,6 +445,16 @@ void MainWindow::connectContentSignals()
             this, [this](qint64 playlistId) {
         m_backend->getPlaylist(playlistId);
         statusBar()->showMessage(tr("Loading playlist…"));
+    });
+    connect(m_content, &MainContent::downloadAlbumRequested,
+            this, [this](const QString &albumId) {
+        m_backend->downloadAlbum(albumId, AppSettings::instance().downloadFormat());
+        statusBar()->showMessage(tr("Downloading album…"));
+    });
+    connect(m_content, &MainContent::downloadPlaylistRequested,
+            this, [this](qint64 playlistId) {
+        m_backend->downloadPlaylist(playlistId, AppSettings::instance().downloadFormat());
+        statusBar()->showMessage(tr("Downloading playlist…"));
     });
     connect(m_content, &MainContent::playlistFollowToggled,
             this, [this](qint64 playlistId, bool follow) {
@@ -463,12 +523,21 @@ void MainWindow::connectToolbarSignals()
     connect(m_toolBar, &MainToolBar::searchToggled, this, &MainWindow::onSearchToggled);
     connect(m_toolBar, &MainToolBar::queueToggled,
             this, [this](bool v) { m_queuePanel->setVisible(v); });
+    connect(m_toolBar, &MainToolBar::transfersToggled,
+            this, [this](bool v) { m_transfersPanel->setVisible(v); });
     connect(m_queuePanel, &QDockWidget::visibilityChanged,
             m_toolBar, &MainToolBar::setQueueToggleChecked);
     connect(m_sidePanel, &QDockWidget::visibilityChanged,
             m_toolBar, &MainToolBar::setSearchToggleChecked);
+    connect(m_transfersPanel, &QDockWidget::visibilityChanged,
+            m_toolBar, &MainToolBar::setTransfersToggleChecked);
+    connect(m_transfersPanel, &TransfersPanel::cancelTransferRequested,
+            this, [this](quint64 transferId) { m_backend->cancelDownload(transferId); });
+    connect(m_transfersPanel, &TransfersPanel::cancelAllTransfersRequested,
+            this, [this] { m_backend->cancelAllDownloads(); });
     m_toolBar->setQueueToggleChecked(m_queuePanel->isVisible());
     m_toolBar->setSearchToggleChecked(m_sidePanel->isVisible());
+    m_toolBar->setTransfersToggleChecked(m_transfersPanel->isVisible());
 
     connect(m_toolBar, &MainToolBar::albumRequested,  this, &MainWindow::onSearchAlbumSelected);
     connect(m_toolBar, &MainToolBar::artistRequested, this, &MainWindow::onSearchArtistSelected);
@@ -514,6 +583,7 @@ void MainWindow::setupMenuBar()
     viewMenu->addAction(m_libraryDock->toggleViewAction());
     viewMenu->addAction(m_contextView->toggleViewAction());
     viewMenu->addAction(m_queuePanel->toggleViewAction());
+    viewMenu->addAction(m_transfersPanel->toggleViewAction());
     viewMenu->addAction(m_sidePanel->toggleViewAction());
     viewMenu->addSeparator();
     viewMenu->addAction(Icon::get("view-refresh"), tr("Reset layout"),
@@ -531,23 +601,41 @@ void MainWindow::setupMenuBar()
 
 void MainWindow::tryRestoreSession()
 {
-    const QString token = AppSettings::instance().authToken();
-    if (!token.isEmpty()) {
-        m_backend->setToken(token);
-        if (AppSettings::instance().userId() == 0)
-            m_backend->getUser();  // userLoaded will call m_library->refresh()
-        else
-            m_library->refresh();
-        // Preload favorites so buttons/menus reflect state immediately.
-        m_backend->getFavTracks();
-        m_backend->getFavAlbums();
-        m_backend->getFavArtists();
-        const QString name = AppSettings::instance().displayName();
-        statusBar()->showMessage(tr("Signed in as %1").arg(
-            name.isEmpty() ? AppSettings::instance().userEmail() : name));
-    } else {
+    const AppSettings &settings = AppSettings::instance();
+    const QString token = settings.authToken();
+    const QString refreshToken = settings.authRefreshToken();
+    if (token.isEmpty() && refreshToken.isEmpty()) {
         QTimer::singleShot(200, this, &MainWindow::showLoginDialog);
+        return;
     }
+
+    m_backend->restoreSession(token, refreshToken, settings.authExpiresAt());
+    if (!refreshToken.isEmpty()
+        && (settings.authExpiresAt() <= 0
+            || QDateTime::currentSecsSinceEpoch() + 60 >= settings.authExpiresAt())) {
+        m_restoringSessionRefresh = true;
+        statusBar()->showMessage(tr("Refreshing session..."));
+        m_backend->refreshAuth();
+        return;
+    }
+
+    continueRestoredSession();
+}
+
+void MainWindow::continueRestoredSession()
+{
+    if (AppSettings::instance().userId() == 0)
+        m_backend->getUser();  // userLoaded will call m_library->refresh()
+    else
+        m_library->refresh();
+
+    m_backend->getFavTracks();
+    m_backend->getFavAlbums();
+    m_backend->getFavArtists();
+
+    const QString name = AppSettings::instance().displayName();
+    statusBar()->showMessage(tr("Signed in as %1").arg(
+        name.isEmpty() ? AppSettings::instance().userEmail() : name));
 }
 
 // ---- slots ----
@@ -583,7 +671,7 @@ void MainWindow::showLoginDialog()
         dlg->setBusy(true);
         m_backend->login(email, password);
     });
-    connect(m_backend, &QobuzBackend::loginSuccess, dlg, [dlg](const QString &, const QJsonObject &) {
+    connect(m_backend, &QobuzBackend::loginSuccess, dlg, [dlg](const QString &, const QString &, qint64, const QJsonObject &) {
         dlg->accept();
     });
     connect(m_backend, &QobuzBackend::loginError, dlg, [dlg](const QString &err) {
@@ -599,9 +687,11 @@ void MainWindow::showSettingsDialog()
     dlg.exec();
 }
 
-void MainWindow::onLoginSuccess(const QString &token, const QJsonObject &user)
+void MainWindow::onLoginSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt, const QJsonObject &user)
 {
     AppSettings::instance().setAuthToken(token);
+    AppSettings::instance().setAuthRefreshToken(refreshToken);
+    AppSettings::instance().setAuthExpiresAt(expiresAt);
     const QString displayName = user["display_name"].toString();
     const QString email       = user["email"].toString();
     AppSettings::instance().setDisplayName(displayName);
@@ -827,4 +917,63 @@ void MainWindow::onUserPlaylistsChanged(const QVector<QPair<qint64, QString>> &p
     m_sidePanel->searchTab()->setUserPlaylists(playlists);
     m_toolBar->setUserPlaylists(playlists);
     m_queuePanel->setUserPlaylists(playlists);
+}
+
+void MainWindow::onDownloadStarted(const QJsonObject &info)
+{
+    m_transfersPanel->onTransferStarted(info);
+    if (!m_transfersPanel->isVisible())
+        m_transfersPanel->show();
+    const QString kind = info["kind"].toString();
+    const QString label = info["label"].toString();
+    const int totalTracks = info["total_tracks"].toInt();
+    if (kind == QLatin1String("track")) {
+        statusBar()->showMessage(tr("Downloading track: %1").arg(label));
+        return;
+    }
+    statusBar()->showMessage(tr("Downloading %1 (%2 tracks)…").arg(label).arg(totalTracks));
+}
+
+void MainWindow::onDownloadProgress(const QJsonObject &info)
+{
+    m_transfersPanel->onTransferProgress(info);
+    const QString kind = info["kind"].toString();
+    const QString title = info["track_title"].toString();
+    const int current = info["current"].toInt();
+    const int totalTracks = info["total_tracks"].toInt();
+    const qint64 totalBytes = static_cast<qint64>(info["total_bytes"].toDouble(-1));
+    const qint64 downloadedBytes = static_cast<qint64>(info["downloaded_bytes"].toDouble());
+    QString suffix;
+    if (totalBytes > 0) {
+        const int percent = static_cast<int>((100.0 * downloadedBytes) / totalBytes);
+        suffix = tr(" (%1%)").arg(percent);
+    }
+    if (kind == QLatin1String("track")) {
+        statusBar()->showMessage(tr("Downloading %1%2").arg(title, suffix));
+        return;
+    }
+    statusBar()->showMessage(tr("Downloading %1/%2: %3%4").arg(current).arg(totalTracks).arg(title, suffix));
+}
+
+void MainWindow::onDownloadFinished(const QJsonObject &info)
+{
+    m_transfersPanel->onTransferFinished(info);
+    const QString kind = info["kind"].toString();
+    const QString path = info["path"].toString();
+    const int failedTracks = info["failed_tracks"].toInt();
+    if (kind == QLatin1String("track")) {
+        statusBar()->showMessage(tr("Track downloaded to %1").arg(path), 6000);
+        return;
+    }
+    if (failedTracks > 0) {
+        statusBar()->showMessage(tr("Download finished with %1 failed tracks: %2").arg(failedTracks).arg(path), 8000);
+        return;
+    }
+    statusBar()->showMessage(tr("Download finished: %1").arg(path), 6000);
+}
+
+void MainWindow::onDownloadFailed(const QJsonObject &info)
+{
+    m_transfersPanel->onTransferFailed(info);
+    statusBar()->showMessage(tr("Download failed: %1").arg(info["error"].toString()), 8000);
 }

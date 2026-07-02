@@ -19,6 +19,8 @@ target_sources(qobuz-qt PRIVATE
     view/maintoolbar.cpp
     view/maincontent.hpp
     view/maincontent.cpp
+    view/transferspanel.hpp
+    view/transferspanel.cpp
     view/context/view.hpp
     view/context/view.cpp
     view/queuepanel.hpp

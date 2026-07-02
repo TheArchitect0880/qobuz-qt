@@ -156,8 +156,13 @@ void Library::onContextMenuRequested(const QPoint &pos)
         const QString plName    = item->data(0, NameRole).toString();
         const bool    isOwner   = item->data(0, IsOwnerRole).toBool();
 
+        menu.addSeparator();
+        auto *downloadPl = menu.addAction(tr("Download \"%1\"").arg(plName));
+        connect(downloadPl, &QAction::triggered, this, [this, plId, plName] {
+            emit playlistDownloadRequested(plId, plName);
+        });
+
         if (isOwner) {
-            menu.addSeparator();
             auto *delPl = menu.addAction(tr("Delete \"%1\"…").arg(plName));
             connect(delPl, &QAction::triggered, this, [this, plId, plName] {
                 const auto answer = QMessageBox::question(

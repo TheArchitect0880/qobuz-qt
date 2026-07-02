@@ -24,6 +24,8 @@ public:
     // --- auth ---
     void login(const QString &email, const QString &password);
     void setToken(const QString &token);
+    void restoreSession(const QString &token, const QString &refreshToken, qint64 expiresAt);
+    void refreshAuth();
     void getUser();
 
     // --- catalog ---
@@ -69,6 +71,13 @@ public:
     void addFavArtist(qint64 artistId);
     void removeFavArtist(qint64 artistId);
 
+    // --- downloads ---
+    void downloadTrack(qint64 trackId, int formatId = 7);
+    void downloadAlbum(const QString &albumId, int formatId = 7);
+    void downloadPlaylist(qint64 playlistId, int formatId = 7);
+    void cancelDownload(quint64 transferId);
+    void cancelAllDownloads();
+
     // --- playback ---
     void playTrack(qint64 trackId, int formatId = 6);
     void pause();
@@ -85,7 +94,8 @@ public:
 
 signals:
     // auth
-    void loginSuccess(const QString &token, const QJsonObject &user);
+    void loginSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt, const QJsonObject &user);
+    void authRefreshSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt);
     void loginError(const QString &error);
     void userLoaded(const QJsonObject &user);
 
@@ -124,6 +134,11 @@ signals:
 
     // errors
     void error(const QString &message);
+    void downloadStarted(const QJsonObject &info);
+    void downloadProgress(const QJsonObject &info);
+    void downloadFinished(const QJsonObject &info);
+    void downloadFailed(const QJsonObject &info);
+    void downloadCancelled(const QJsonObject &info);
 
 private slots:
     Q_INVOKABLE void onEvent(int eventType, const QString &json);

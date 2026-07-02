@@ -55,6 +55,7 @@ pub struct TrackDto {
     pub composer: Option<ArtistDto>,
     pub work: Option<String>,
     pub media_number: Option<i32>,
+    pub parental_warning: Option<bool>,
     pub streamable: Option<bool>,
     pub purchasable: Option<bool>,
     pub hires: Option<bool>,
@@ -258,4 +259,3 @@ impl Format {
     }
 
 }
-

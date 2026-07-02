@@ -46,6 +46,12 @@ enum QobuzEvent {
     EV_PLAYLIST_SEARCH_OK    = 32,
     EV_PLAYLIST_SUBSCRIBED   = 33,
     EV_PLAYLIST_UNSUBSCRIBED = 34,
+    EV_DOWNLOAD_STARTED      = 35,
+    EV_DOWNLOAD_PROGRESS     = 36,
+    EV_DOWNLOAD_FINISHED     = 37,
+    EV_DOWNLOAD_FAILED       = 38,
+    EV_DOWNLOAD_CANCELLED    = 39,
+    EV_AUTH_REFRESH_OK       = 40,
 };
 
 // Callback signature
@@ -58,6 +64,8 @@ void                qobuz_backend_free(QobuzBackendOpaque *backend);
 // Auth
 void qobuz_backend_login(QobuzBackendOpaque *backend, const char *email, const char *password);
 void qobuz_backend_set_token(QobuzBackendOpaque *backend, const char *token);
+void qobuz_backend_restore_session(QobuzBackendOpaque *backend, const char *token, const char *refresh_token, uint64_t expires_at);
+void qobuz_backend_refresh_auth(QobuzBackendOpaque *backend);
 void qobuz_backend_get_user(QobuzBackendOpaque *backend);
 
 // Catalog
@@ -122,6 +130,13 @@ void qobuz_backend_add_fav_album(QobuzBackendOpaque *backend, const char *album_
 void qobuz_backend_remove_fav_album(QobuzBackendOpaque *backend, const char *album_id);
 void qobuz_backend_add_fav_artist(QobuzBackendOpaque *backend, int64_t artist_id);
 void qobuz_backend_remove_fav_artist(QobuzBackendOpaque *backend, int64_t artist_id);
+
+// Downloads
+void qobuz_backend_download_track(QobuzBackendOpaque *backend, int64_t track_id, int32_t format_id, const char *settings_json);
+void qobuz_backend_download_album(QobuzBackendOpaque *backend, const char *album_id, int32_t format_id, const char *settings_json);
+void qobuz_backend_download_playlist(QobuzBackendOpaque *backend, int64_t playlist_id, int32_t format_id, const char *settings_json);
+void qobuz_backend_cancel_download(QobuzBackendOpaque *backend, uint64_t transfer_id);
+void qobuz_backend_cancel_all_downloads(QobuzBackendOpaque *backend);
 
 #ifdef __cplusplus
 }

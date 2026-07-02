@@ -4,6 +4,7 @@
 #include "playqueue.hpp"
 #include "view/maintoolbar.hpp"
 #include "view/maincontent.hpp"
+#include "view/transferspanel.hpp"
 #include "view/context/view.hpp"
 #include "view/queuepanel.hpp"
 #include "view/sidepanel/view.hpp"
@@ -35,7 +36,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
-    void onLoginSuccess(const QString &token, const QJsonObject &user);
+    void onLoginSuccess(const QString &token, const QString &refreshToken, qint64 expiresAt, const QJsonObject &user);
     void onLoginError(const QString &error);
 
     void onFavTracksLoaded(const QJsonObject &result);
@@ -52,6 +53,10 @@ private slots:
     void onSearchToggled(bool visible);
     void onPlaylistCreated(const QJsonObject &playlist);
     void onUserPlaylistsChanged(const QVector<QPair<qint64, QString>> &playlists);
+    void onDownloadStarted(const QJsonObject &info);
+    void onDownloadProgress(const QJsonObject &info);
+    void onDownloadFinished(const QJsonObject &info);
+    void onDownloadFailed(const QJsonObject &info);
     void resetLayout();
 
     void showLoginDialog();
@@ -68,11 +73,13 @@ private:
     bool m_showFavTracksOnLoad = false;
     bool m_showFavAlbumsOnLoad = false;
     bool m_showFavArtistsOnLoad = false;
+    bool m_restoringSessionRefresh = false;
     MainToolBar     *m_toolBar     = nullptr;
     MainContent     *m_content     = nullptr;
     List::Library   *m_library     = nullptr;
     Context::View   *m_contextView = nullptr;
     QueuePanel      *m_queuePanel  = nullptr;
+    TransfersPanel  *m_transfersPanel = nullptr;
     SidePanel::View *m_sidePanel   = nullptr;
     QDockWidget     *m_libraryDock = nullptr;
     LastFmScrobbler *m_scrobbler   = nullptr;
@@ -89,6 +96,7 @@ private:
     void connectContentSignals();
     void connectToolbarSignals();
     void tryRestoreSession();
+    void continueRestoredSession();
     void restoreWindowLayout();
     void saveWindowLayout() const;
     int currentLibraryDockWidth() const;
