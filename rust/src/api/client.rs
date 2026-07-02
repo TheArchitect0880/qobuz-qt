@@ -461,13 +461,65 @@ impl QobuzClient {
     // --- Album ---
 
     pub async fn get_album(&self, album_id: &str) -> Result<AlbumDto> {
+        const PAGE_LIMIT: u32 = 50;
+
         let resp = self
             .get_request("album/get")
-            .query(&[("album_id", album_id), ("limit", "50"), ("offset", "0")])
+            .query(&[
+                ("album_id", album_id.to_string()),
+                ("limit", PAGE_LIMIT.to_string()),
+                ("offset", "0".to_string()),
+            ])
             .send()
             .await?;
         let body = Self::check_response(resp).await?;
-        Ok(serde_json::from_value(body)?)
+        let mut album: AlbumDto = serde_json::from_value(body)?;
+
+        let mut all_items = album
+            .tracks
+            .as_ref()
+            .and_then(|tracks| tracks.items.clone())
+            .unwrap_or_default();
+        let total = album
+            .tracks
+            .as_ref()
+            .and_then(|tracks| tracks.total)
+            .or(album.tracks_count)
+            .unwrap_or(all_items.len() as i32)
+            .max(all_items.len() as i32);
+
+        let mut offset = all_items.len() as u32;
+        while (offset as i32) < total {
+            let resp = self
+                .get_request("album/get")
+                .query(&[
+                    ("album_id", album_id.to_string()),
+                    ("limit", PAGE_LIMIT.to_string()),
+                    ("offset", offset.to_string()),
+                ])
+                .send()
+                .await?;
+            let body = Self::check_response(resp).await?;
+            let page: AlbumDto = serde_json::from_value(body)?;
+            let mut page_items = page
+                .tracks
+                .and_then(|tracks| tracks.items)
+                .unwrap_or_default();
+            if page_items.is_empty() {
+                break;
+            }
+            all_items.append(&mut page_items);
+            offset = all_items.len() as u32;
+        }
+
+        album.tracks = Some(TracksWrapper {
+            items: Some(all_items),
+            total: Some(total),
+            offset: Some(0),
+            limit: Some(PAGE_LIMIT as i32),
+        });
+
+        Ok(album)
     }
 
     // --- Artist ---

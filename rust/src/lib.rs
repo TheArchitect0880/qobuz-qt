@@ -125,6 +125,36 @@ fn parse_download_settings(json: &str) -> DownloadSettings {
         .normalized()
 }
 
+fn album_for_track_metadata(album: &api::models::AlbumDto) -> api::models::AlbumDto {
+    let mut album = album.clone();
+    album.tracks = None;
+    album
+}
+
+fn track_with_album_metadata(
+    track: &api::models::TrackDto,
+    album: &api::models::AlbumDto,
+) -> api::models::TrackDto {
+    let mut track = track.clone();
+    track.album = Some(album_for_track_metadata(album));
+    track
+}
+
+fn has_album_metadata(track: &api::models::TrackDto) -> bool {
+    let Some(album) = track.album.as_ref() else {
+        return false;
+    };
+    album
+        .title
+        .as_deref()
+        .is_some_and(|title| !title.trim().is_empty())
+        && album
+            .artist
+            .as_ref()
+            .and_then(|artist| artist.name.as_deref())
+            .is_some_and(|artist| !artist.trim().is_empty())
+}
+
 fn emit_download_started(
     cb: EventCallback,
     ud: SendPtr,
@@ -1781,14 +1811,15 @@ pub unsafe extern "C" fn qobuz_backend_download_album(
                 if cancel.load(Ordering::Relaxed) {
                     anyhow::bail!(CANCELLED_ERROR);
                 }
-                let title = track_title(track);
+                let metadata_track = track_with_album_metadata(track, &album);
+                let title = track_title(&metadata_track);
                 let track_result = async {
-                    let download = client.lock().await.get_track_download_url(track.id, format).await?;
+                    let download = client.lock().await.get_track_download_url(metadata_track.id, format).await?;
                     let ext = file_extension(&download, format);
                     let out_path = track_output_path(
                         &settings,
                         "qobuz",
-                        track,
+                        &metadata_track,
                         &title,
                         &ext,
                         Some(&folder),
@@ -1806,7 +1837,7 @@ pub unsafe extern "C" fn qobuz_backend_download_album(
                             transfer_id,
                             index + 1,
                             total_tracks,
-                            track.id,
+                            metadata_track.id,
                             &title,
                             downloaded,
                             total,
@@ -1816,7 +1847,7 @@ pub unsafe extern "C" fn qobuz_backend_download_album(
                     .await?;
                     let tag_meta = build_tag_metadata(
                         &settings,
-                        track,
+                        &metadata_track,
                         &title,
                         disc_total,
                         total_tracks as i32,
@@ -1847,7 +1878,7 @@ pub unsafe extern "C" fn qobuz_backend_download_album(
                         transfer_id,
                         index + 1,
                         total_tracks,
-                        track.id,
+                        metadata_track.id,
                         &title,
                         0,
                         None,
@@ -1921,19 +1952,29 @@ pub unsafe extern "C" fn qobuz_backend_download_playlist(
                 if cancel.load(Ordering::Relaxed) {
                     anyhow::bail!(CANCELLED_ERROR);
                 }
-                let title = track_title(track);
+                let metadata_track = if has_album_metadata(track) {
+                    track.clone()
+                } else {
+                    client
+                        .lock()
+                        .await
+                        .get_track(track.id)
+                        .await
+                        .unwrap_or_else(|_| track.clone())
+                };
+                let title = track_title(&metadata_track);
                 let playlist_position = if settings.renumber_playlist_tracks {
                     Some(index + 1)
                 } else {
                     None
                 };
                 let track_result = async {
-                    let download = client.lock().await.get_track_download_url(track.id, format).await?;
+                    let download = client.lock().await.get_track_download_url(metadata_track.id, format).await?;
                     let ext = file_extension(&download, format);
                     let out_path = track_output_path(
                         &settings,
                         "qobuz",
-                        track,
+                        &metadata_track,
                         &title,
                         &ext,
                         Some(&folder),
@@ -1943,9 +1984,9 @@ pub unsafe extern "C" fn qobuz_backend_download_playlist(
                     );
                     let cover_path = if settings.embed_artwork {
                         prepare_cover_art(
-                            cover_art_url(track.album.as_ref()),
+                            cover_art_url(metadata_track.album.as_ref()),
                             &folder,
-                            &format!("qobuz-qt-playlist-cover-{}-{}.jpg", playlist_id, track.id),
+                            &format!("qobuz-qt-playlist-cover-{}-{}.jpg", playlist_id, metadata_track.id),
                             false,
                         )
                         .await
@@ -1962,7 +2003,7 @@ pub unsafe extern "C" fn qobuz_backend_download_playlist(
                             transfer_id,
                             index + 1,
                             total_tracks,
-                            track.id,
+                            metadata_track.id,
                             &title,
                             downloaded,
                             total,
@@ -1972,7 +2013,7 @@ pub unsafe extern "C" fn qobuz_backend_download_playlist(
                     .await?;
                     let tag_meta = build_tag_metadata(
                         &settings,
-                        track,
+                        &metadata_track,
                         &title,
                         1,
                         total_tracks as i32,
@@ -2003,7 +2044,7 @@ pub unsafe extern "C" fn qobuz_backend_download_playlist(
                         transfer_id,
                         index + 1,
                         total_tracks,
-                        track.id,
+                        metadata_track.id,
                         &title,
                         0,
                         None,
